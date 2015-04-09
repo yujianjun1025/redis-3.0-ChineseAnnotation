@@ -230,6 +230,7 @@ void zfree(void *ptr) {
 #endif
 }
 
+/// 拷贝字符串至新的内存中并返回
 char *zstrdup(const char *s) {
     size_t l = strlen(s)+1;
     char *p = zmalloc(l);
@@ -238,6 +239,7 @@ char *zstrdup(const char *s) {
     return p;
 }
 
+/// 返回已经分配的内存字节数
 size_t zmalloc_used_memory(void) {
     size_t um;
 
