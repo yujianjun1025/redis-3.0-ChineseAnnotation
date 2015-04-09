@@ -28,6 +28,13 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+/// zmalloc.c redis默认使用jemalloc分配内存,jemalloc已经帮助我们记录了分配的
+/// 内存块大小.redis提供的zmalloc,zfree,zcalloc,zrelloc都由宏控制编译,默认使用
+/// jemalloc,否则使用(tc_malloc, libc_malloc)(平台相关),zmalloc,zfree,zcalloc,zrelloc
+/// 这四个函数都有分配(释放)内存,更新分配的内存字节数这样的操作
+
+/// 一句话总结,redis的zmalloc封装了不同平台的内存分配函数,并进行分配的内存大小的记录
+
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -44,6 +51,7 @@ void zlibc_free(void *ptr) {
 #include "config.h"
 #include "zmalloc.h"
 
+/// HAVE_MALLOC_SIZE: 表示malloc的时候已经把内存的size也记录了,见zmalloc.h中的定义
 #ifdef HAVE_MALLOC_SIZE
 #define PREFIX_SIZE (0)
 #else
@@ -67,6 +75,7 @@ void zlibc_free(void *ptr) {
 #define free(ptr) je_free(ptr)
 #endif
 
+/// 用自带的原子操作函数
 #if defined(__ATOMIC_RELAXED)
 #define update_zmalloc_stat_add(__n) __atomic_add_fetch(&used_memory, (__n), __ATOMIC_RELAXED)
 #define update_zmalloc_stat_sub(__n) __atomic_sub_fetch(&used_memory, (__n), __ATOMIC_RELAXED)
@@ -75,6 +84,7 @@ void zlibc_free(void *ptr) {
 #define update_zmalloc_stat_sub(__n) __sync_sub_and_fetch(&used_memory, (__n))
 #else
 #define update_zmalloc_stat_add(__n) do { \
+    /// 迫不得已使用线程锁
     pthread_mutex_lock(&used_memory_mutex); \
     used_memory += (__n); \
     pthread_mutex_unlock(&used_memory_mutex); \
@@ -88,6 +98,7 @@ void zlibc_free(void *ptr) {
 
 #endif
 
+/// 更新(增加)分配的内存数
 #define update_zmalloc_stat_alloc(__n) do { \
     size_t _n = (__n); \
     if (_n&(sizeof(long)-1)) _n += sizeof(long)-(_n&(sizeof(long)-1)); \
@@ -98,6 +109,7 @@ void zlibc_free(void *ptr) {
     } \
 } while(0)
 
+/// 更新(减少)分配的内存数
 #define update_zmalloc_stat_free(__n) do { \
     size_t _n = (__n); \
     if (_n&(sizeof(long)-1)) _n += sizeof(long)-(_n&(sizeof(long)-1)); \
@@ -112,6 +124,7 @@ static size_t used_memory = 0;
 static int zmalloc_thread_safe = 0;
 pthread_mutex_t used_memory_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/// 内存不足调用这个函数并abort
 static void zmalloc_default_oom(size_t size) {
     fprintf(stderr, "zmalloc: Out of memory trying to allocate %zu bytes\n",
         size);
@@ -121,20 +134,26 @@ static void zmalloc_default_oom(size_t size) {
 
 static void (*zmalloc_oom_handler)(size_t) = zmalloc_default_oom;
 
+/// 分配size大小的内存,并更新已分配的内存字节数
 void *zmalloc(size_t size) {
     void *ptr = malloc(size+PREFIX_SIZE);
 
-    if (!ptr) zmalloc_oom_handler(size);
+    if (!ptr)
+    {
+        zmalloc_oom_handler(size);
+    }
 #ifdef HAVE_MALLOC_SIZE
     update_zmalloc_stat_alloc(zmalloc_size(ptr));
     return ptr;
 #else
+    /// 分配的内存没有记录内存块大小,手动几率并更新zmalloc已分配的内存
     *((size_t*)ptr) = size;
     update_zmalloc_stat_alloc(size+PREFIX_SIZE);
     return (char*)ptr+PREFIX_SIZE;
 #endif
 }
 
+/// 分配size大小的内存,初始化为0,并更新已分配的内存字节数
 void *zcalloc(size_t size) {
     void *ptr = calloc(1, size+PREFIX_SIZE);
 
@@ -149,6 +168,7 @@ void *zcalloc(size_t size) {
 #endif
 }
 
+/// 重新分配一块size大小的内存,并将原来ptr处的内存复制过去,然后更新已分配的内存字节数
 void *zrealloc(void *ptr, size_t size) {
 #ifndef HAVE_MALLOC_SIZE
     void *realptr;
@@ -255,12 +275,15 @@ void zmalloc_set_oom_handler(void (*oom_handler)(size_t)) {
  * function RedisEstimateRSS() that is a much faster (and less precise)
  * version of the function. */
 
+/// linux 系统定义了HAVE_PROC_STAT,见config.h
 #if defined(HAVE_PROC_STAT)
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 
+/// RSS:Resident Set Size 实际使用物理内存,包含共享库占用的内存
+/// 以下的代码为系统相关,不同的系统有不同的实现,暂时不关心下面的代码
 size_t zmalloc_get_rss(void) {
     int page = sysconf(_SC_PAGESIZE);
     size_t rss;
