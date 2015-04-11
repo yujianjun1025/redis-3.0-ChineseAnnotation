@@ -15,11 +15,14 @@ void format(char* buf, size_t buflen, char *fmt, ...)
 
 int main(int argc, char* argv[])
 {
-    char buf[1024];
+    char buf1[1024];
+    char buf2[1024];
 
-    format(buf, sizeof(buf), "the buf is create by %s, length is %d\n", "Zeekun xiao", sizeof(buf));
-
-    printf("%s", buf);
+    format(buf1, sizeof(buf1), "the buf is create by %s, length is %d\n", "Zeekun xiao", sizeof(buf1));
+    printf("%s", buf1);
     
+    format(buf2, sizeof(buf2), "only string\n");
+    printf("%s", buf2);
+
     return 0;
 }
