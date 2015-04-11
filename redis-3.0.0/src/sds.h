@@ -39,16 +39,18 @@
 typedef char *sds;
 
 struct sdshdr {
-    unsigned int len;
-    unsigned int free;
-    char buf[];
+    unsigned int len; /// 字符串已用长度
+    unsigned int free;/// 剩余字节数
+    char buf[];/// 存放字符串buf
 };
 
+/// 返回动态字符串的长度
 static inline size_t sdslen(const sds s) {
     struct sdshdr *sh = (void*)(s-(sizeof(struct sdshdr)));
     return sh->len;
 }
 
+/// 返回动态字符串的未用字节数
 static inline size_t sdsavail(const sds s) {
     struct sdshdr *sh = (void*)(s-(sizeof(struct sdshdr)));
     return sh->free;
