@@ -28,6 +28,8 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+/// 简单的双端链表实现
+
 
 #include <stdlib.h>
 #include "adlist.h"
@@ -38,6 +40,7 @@
  * by the user before to call AlFreeList().
  *
  * On error, NULL is returned. Otherwise the pointer to the new list. */
+/// 创建空的双端链表
 list *listCreate(void)
 {
     struct list *list;
@@ -55,6 +58,7 @@ list *listCreate(void)
 /* Free the whole list.
  *
  * This function can't fail. */
+/// 释放整个链表
 void listRelease(list *list)
 {
     unsigned long len;
@@ -64,7 +68,11 @@ void listRelease(list *list)
     len = list->len;
     while(len--) {
         next = current->next;
-        if (list->free) list->free(current->value);
+        if (list->free) 
+        {
+            /// 清除节点数据
+            list->free(current->value);
+        }
         zfree(current);
         current = next;
     }
@@ -77,12 +85,14 @@ void listRelease(list *list)
  * On error, NULL is returned and no operation is performed (i.e. the
  * list remains unaltered).
  * On success the 'list' pointer you pass to the function is returned. */
+/// 在链表头部插入节点
 list *listAddNodeHead(list *list, void *value)
 {
     listNode *node;
 
     if ((node = zmalloc(sizeof(*node))) == NULL)
         return NULL;
+
     node->value = value;
     if (list->len == 0) {
         list->head = list->tail = node;
@@ -103,12 +113,14 @@ list *listAddNodeHead(list *list, void *value)
  * On error, NULL is returned and no operation is performed (i.e. the
  * list remains unaltered).
  * On success the 'list' pointer you pass to the function is returned. */
+/// 在链表尾部插入节点
 list *listAddNodeTail(list *list, void *value)
 {
     listNode *node;
 
     if ((node = zmalloc(sizeof(*node))) == NULL)
         return NULL;
+
     node->value = value;
     if (list->len == 0) {
         list->head = list->tail = node;
@@ -128,6 +140,7 @@ list *listInsertNode(list *list, listNode *old_node, void *value, int after) {
 
     if ((node = zmalloc(sizeof(*node))) == NULL)
         return NULL;
+
     node->value = value;
     if (after) {
         node->prev = old_node;
@@ -142,9 +155,11 @@ list *listInsertNode(list *list, listNode *old_node, void *value, int after) {
             list->head = node;
         }
     }
+    /// 调整node的上一个节点,使得它指向node
     if (node->prev != NULL) {
         node->prev->next = node;
     }
+    /// 调整node的下一个节点,使得它指向node
     if (node->next != NULL) {
         node->next->prev = node;
     }
@@ -159,14 +174,28 @@ list *listInsertNode(list *list, listNode *old_node, void *value, int after) {
 void listDelNode(list *list, listNode *node)
 {
     if (node->prev)
+    {
         node->prev->next = node->next;
-    else
+    }
+    else  /// node是头节点
+    {
         list->head = node->next;
+    }
+
     if (node->next)
+    {
         node->next->prev = node->prev;
-    else
+    }
+    else  /// node是尾节点
+    {
         list->tail = node->prev;
-    if (list->free) list->free(node->value);
+    }
+
+    if (list->free) 
+    {
+        list->free(node->value);
+    }
+
     zfree(node);
     list->len--;
 }
@@ -175,6 +204,7 @@ void listDelNode(list *list, listNode *node)
  * call to listNext() will return the next element of the list.
  *
  * This function can't fail. */
+/// 按照遍历方向'direction'返回list的迭代器
 listIter *listGetIterator(list *list, int direction)
 {
     listIter *iter;
@@ -189,16 +219,19 @@ listIter *listGetIterator(list *list, int direction)
 }
 
 /* Release the iterator memory */
+/// 释放迭代器
 void listReleaseIterator(listIter *iter) {
     zfree(iter);
 }
 
 /* Create an iterator in the list private iterator structure */
+/// 将迭代器设置为从头开始遍历
 void listRewind(list *list, listIter *li) {
     li->next = list->head;
     li->direction = AL_START_HEAD;
 }
 
+/// 将迭代器设置为从尾部开始遍历
 void listRewindTail(list *list, listIter *li) {
     li->next = list->tail;
     li->direction = AL_START_TAIL;
@@ -218,6 +251,7 @@ void listRewindTail(list *list, listIter *li) {
  * }
  *
  * */
+/// 根据迭代器的遍历方向,返回下一个节点
 listNode *listNext(listIter *iter)
 {
     listNode *current = iter->next;
@@ -239,6 +273,7 @@ listNode *listNext(listIter *iter)
  * the original node is used as value of the copied node.
  *
  * The original list both on success or error is never modified. */
+/// 复制整个链表
 list *listDup(list *orig)
 {
     list *copy;
@@ -282,6 +317,7 @@ list *listDup(list *orig)
  * On success the first matching node pointer is returned
  * (search starts from head). If no matching node exists
  * NULL is returned. */
+/// 遍历链表搜寻与key有相同值的节点
 listNode *listSearchKey(list *list, void *key)
 {
     listIter *iter;
@@ -310,6 +346,7 @@ listNode *listSearchKey(list *list, void *key)
  * and so on. Negative integers are used in order to count
  * from the tail, -1 is the last element, -2 the penultimate
  * and so on. If the index is out of range NULL is returned. */
+/// 返回链表中索引为index的节点
 listNode *listIndex(list *list, long index) {
     listNode *n;
 
@@ -325,6 +362,7 @@ listNode *listIndex(list *list, long index) {
 }
 
 /* Rotate the list removing the tail node and inserting it to the head. */
+/// 将尾节点移至头节点前面
 void listRotate(list *list) {
     listNode *tail = list->tail;
 

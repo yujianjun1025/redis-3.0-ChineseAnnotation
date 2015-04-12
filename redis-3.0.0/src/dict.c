@@ -156,6 +156,7 @@ unsigned int dictGenCaseHashFunction(const unsigned char *buf, int len) {
 
 /* Reset a hash table already initialized with ht_init().
  * NOTE: This function should only be called by ht_destroy(). */
+/// 将hash table置为初始状态(空)
 static void _dictReset(dictht *ht)
 {
     ht->table = NULL;
@@ -165,6 +166,7 @@ static void _dictReset(dictht *ht)
 }
 
 /* Create a new hash table */
+/// 创建dict并初始化
 dict *dictCreate(dictType *type,
         void *privDataPtr)
 {
@@ -175,6 +177,7 @@ dict *dictCreate(dictType *type,
 }
 
 /* Initialize the hash table */
+/// 初始化dict
 int _dictInit(dict *d, dictType *type,
         void *privDataPtr)
 {
@@ -193,14 +196,22 @@ int dictResize(dict *d)
 {
     int minimal;
 
-    if (!dict_can_resize || dictIsRehashing(d)) return DICT_ERR;
+    if (!dict_can_resize || dictIsRehashing(d)) 
+    {
+        return DICT_ERR;
+    }
+
     minimal = d->ht[0].used;
+    /// DICT_HT_INITIAL_SIZE == 4
     if (minimal < DICT_HT_INITIAL_SIZE)
         minimal = DICT_HT_INITIAL_SIZE;
     return dictExpand(d, minimal);
 }
 
 /* Expand or create the hash table */
+/// (1)若dict中ht[0]为空,则新建一个大小为min(2^n >= size)大小的hash table
+/// (2)若dict中ht[0]非空,则新建一个大小为min(2^n >= size)大小的hash table,为rehash做准备
+/// 情况(2)出现的情况较多
 int dictExpand(dict *d, unsigned long size)
 {
     dictht n; /* the new hash table */
@@ -242,9 +253,15 @@ int dictExpand(dict *d, unsigned long size)
  * guaranteed that this function will rehash even a single bucket, since it
  * will visit at max N*10 empty buckets in total, otherwise the amount of
  * work it does would be unbound and the function may block for a long time. */
+/// dict rehash:将dict中n个slot从ht[0]转移至ht[1],若转移完毕,则将ht[1]与ht[0]交换,返回0
+/// 若未转移完毕,则返回1.转移过程如果遇到超过10 * n个空桶,则返回1,表示rehash还未结束,下次继续
 int dictRehash(dict *d, int n) {
     int empty_visits = n*10; /* Max number of empty buckets to visit. */
-    if (!dictIsRehashing(d)) return 0;
+    /// 不在rehash中,直接返回
+    if (!dictIsRehashing(d)) 
+    {
+        return 0;
+    }
 
     while(n-- && d->ht[0].used != 0) {
         dictEntry *de, *nextde;
@@ -252,12 +269,15 @@ int dictRehash(dict *d, int n) {
         /* Note that rehashidx can't overflow as we are sure there are more
          * elements because ht[0].used != 0 */
         assert(d->ht[0].size > (unsigned long)d->rehashidx);
+        /// 跳过空桶
         while(d->ht[0].table[d->rehashidx] == NULL) {
             d->rehashidx++;
+            /// 已经访问了10 * n个空slot了,直接返回
             if (--empty_visits == 0) return 1;
         }
         de = d->ht[0].table[d->rehashidx];
         /* Move all the keys in this bucket from the old to the new hash HT */
+        /// 将hash table一个slot的所有bucket全部从ht[0]转移至ht[1]
         while(de) {
             unsigned int h;
 
@@ -275,6 +295,7 @@ int dictRehash(dict *d, int n) {
     }
 
     /* Check if we already rehashed the whole table... */
+    /// rehash结束
     if (d->ht[0].used == 0) {
         zfree(d->ht[0].table);
         d->ht[0] = d->ht[1];
@@ -314,11 +335,13 @@ int dictRehashMilliseconds(dict *d, int ms) {
  * This function is called by common lookup or update operations in the
  * dictionary so that the hash table automatically migrates from H1 to H2
  * while it is actively used. */
+/// rehash一个slot,仅当没有dict没有迭代器时
 static void _dictRehashStep(dict *d) {
     if (d->iterators == 0) dictRehash(d,1);
 }
 
 /* Add an element to the target hash table */
+/// 将key,value hash到dict中
 int dictAdd(dict *d, void *key, void *val)
 {
     dictEntry *entry = dictAddRaw(d,key);
@@ -349,16 +372,19 @@ dictEntry *dictAddRaw(dict *d, void *key)
     dictEntry *entry;
     dictht *ht;
 
+    /// 如果正在rehash,则rehash一步,这样可以分散rehash的压力,分多次rehash,而不是一次rehash完
     if (dictIsRehashing(d)) _dictRehashStep(d);
 
     /* Get the index of the new element, or -1 if
      * the element already exists. */
+    /// 返回key在dict中hash后的idx,若不在rehash,则idx对应ht[0],否则对应ht[1]
     if ((index = _dictKeyIndex(d, key)) == -1)
         return NULL;
 
     /* Allocate the memory and store the new entry */
     ht = dictIsRehashing(d) ? &d->ht[1] : &d->ht[0];
     entry = zmalloc(sizeof(*entry));
+    /// 总是将新的bucket插入在slot的头位置 
     entry->next = ht->table[index];
     ht->table[index] = entry;
     ht->used++;
@@ -920,18 +946,21 @@ unsigned long dictScan(dict *d,
 /* ------------------------- private functions ------------------------------ */
 
 /* Expand the hash table if needed */
+/// 如果需要,扩展dict的空间
 static int _dictExpandIfNeeded(dict *d)
 {
     /* Incremental rehashing already in progress. Return. */
     if (dictIsRehashing(d)) return DICT_OK;
 
     /* If the hash table is empty expand it to the initial size. */
+    /// 空的hash table,则扩展至初始化大小
     if (d->ht[0].size == 0) return dictExpand(d, DICT_HT_INITIAL_SIZE);
 
     /* If we reached the 1:1 ratio, and we are allowed to resize the hash
      * table (global setting) or we should avoid it but the ratio between
      * elements/buckets is over the "safe" threshold, we resize doubling
      * the number of buckets. */
+    /// bucket数大于slot数,且(1)设置了dict_can_resize[rehash](2)bucket/slot > 5[强制rehash]
     if (d->ht[0].used >= d->ht[0].size &&
         (dict_can_resize ||
          d->ht[0].used/d->ht[0].size > dict_force_resize_ratio))
@@ -960,25 +989,30 @@ static unsigned long _dictNextPower(unsigned long size)
  *
  * Note that if we are in the process of rehashing the hash table, the
  * index is always returned in the context of the second (new) hash table. */
+/// 返回key在dict中的索引,若key已经在dict中,返回-1
 static int _dictKeyIndex(dict *d, const void *key)
 {
     unsigned int h, idx, table;
     dictEntry *he;
 
     /* Expand the hash table if needed */
+    /// 如果需要,扩展dict容量
     if (_dictExpandIfNeeded(d) == DICT_ERR)
         return -1;
     /* Compute the key hash value */
     h = dictHashKey(d, key);
+    /// 检查key是否已经在dict中存在
     for (table = 0; table <= 1; table++) {
         idx = h & d->ht[table].sizemask;
         /* Search if this slot does not already contain the given key */
         he = d->ht[table].table[idx];
         while(he) {
+            /// key已经存在,而不是撞key,返回-1
             if (dictCompareKeys(d, key, he->key))
                 return -1;
             he = he->next;
         }
+        /// 不在rehash,返回ht[0]的index,若正在rehash,则返回ht[1]的index
         if (!dictIsRehashing(d)) break;
     }
     return idx;

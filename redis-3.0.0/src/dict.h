@@ -44,6 +44,7 @@
 /* Unused arguments generate annoying warnings... */
 #define DICT_NOTUSED(V) ((void) V)
 
+/// 字典的一个slot
 typedef struct dictEntry {
     void *key;
     union {
@@ -52,10 +53,10 @@ typedef struct dictEntry {
         int64_t s64;
         double d;
     } v;
-    struct dictEntry *next;
+    struct dictEntry *next;  /// 当hash key冲突时,使用链表解决
 } dictEntry;
 
-typedef struct dictType {
+typedef struct dictType {  /// dict操作数据函数
     unsigned int (*hashFunction)(const void *key);
     void *(*keyDup)(void *privdata, const void *key);
     void *(*valDup)(void *privdata, const void *obj);
@@ -68,9 +69,9 @@ typedef struct dictType {
  * implement incremental rehashing, for the old to the new table. */
 typedef struct dictht {
     dictEntry **table;
-    unsigned long size;
+    unsigned long size;   /// slot数
     unsigned long sizemask;
-    unsigned long used;
+    unsigned long used;   /// bucket数,可能大于size
 } dictht;
 
 typedef struct dict {

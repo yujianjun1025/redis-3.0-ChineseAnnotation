@@ -28,6 +28,9 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+/// SDS: Simple Dynamic String简单的动态字符串
+/// 简单的在结构体中维护字符串长度len, 剩余空间free,以及缓冲区buf
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
