@@ -44,6 +44,7 @@
 #include <ctype.h>
 
 #include "dict.h"
+#include "redis.h"
 #include "zmalloc.h"
 #include "redisassert.h"
 
@@ -57,6 +58,18 @@
  * the number of elements and the buckets > dict_force_resize_ratio. */
 static int dict_can_resize = 1;
 static unsigned int dict_force_resize_ratio = 5;
+
+///打印位的函数
+static void redis_log_long_bits(unsigned long val)
+{
+    redisLog(REDIS_ERR, "%s|%s|%d:\n", __FILE__, __FUNCTION__, __LINE__);
+    for (size_t i = 0; i < sizeof(val) * 8; ++i)
+    {
+        redisLog(REDIS_ERR, "%d", val & 0x1000 ? 1 : 0);
+        val <<= 1;
+    }
+    redisLog(REDIS_ERR, "\n");
+}
 
 /* -------------------------- private prototypes ---------------------------- */
 
@@ -956,18 +969,24 @@ unsigned long dictScan(dict *d,
             /* Increment bits not covered by the smaller mask */
             v = (((v | m0) + 1) & ~m0) | (v & m0);
 
+            redis_log_long_bits(v);
             /* Continue while bits covered by mask difference is non-zero */
         } while (v & (m0 ^ m1));
     }
 
     /* Set unmasked bits so incrementing the reversed cursor
      * operates on the masked bits of the smaller table */
+    redis_log_long_bits(v);
     v |= ~m0;
+    redis_log_long_bits(v);
 
     /* Increment the reverse cursor */
+    redis_log_long_bits(v);
     v = rev(v);
+    redis_log_long_bits(v);
     v++;
     v = rev(v);
+    redis_log_long_bits(v);
 
     return v;
 }
