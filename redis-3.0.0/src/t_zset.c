@@ -254,12 +254,14 @@ int zslDelete(zskiplist *zsl, double score, robj *obj) {
 
 /// value > min 
 /// value >= min
+/// value 是否比给定范围的最小值大
 static int zslValueGteMin(double value, zrangespec *spec) {
     return spec->minex ? (value > spec->min) : (value >= spec->min);
 }
 
 /// value < max
 /// value <= max
+/// value 是否比给定范围的最大值小
 static int zslValueLteMax(double value, zrangespec *spec) {
     return spec->maxex ? (value < spec->max) : (value <= spec->max);
 }
@@ -292,7 +294,7 @@ int zslIsInRange(zskiplist *zsl, zrangespec *range) {
 
 /* Find the first node that is contained in the specified range.
  * Returns NULL when no element is contained in the range. */
-/// 返回跳表中第一个在range范围里的节点
+/// 返回跳表中第一个在range范围里的节点,也就是第一个大于range->min的节点
 zskiplistNode *zslFirstInRange(zskiplist *zsl, zrangespec *range) {
     zskiplistNode *x;
     int i;
@@ -301,6 +303,7 @@ zskiplistNode *zslFirstInRange(zskiplist *zsl, zrangespec *range) {
     if (!zslIsInRange(zsl,range)) return NULL;
 
     x = zsl->header;
+    /// 从高层向底层遍历
     for (i = zsl->level-1; i >= 0; i--) {
         /* Go forward while *OUT* of range. */
         while (x->level[i].forward &&
@@ -347,6 +350,7 @@ zskiplistNode *zslLastInRange(zskiplist *zsl, zrangespec *range) {
  * Min and max are inclusive, so a score >= min || score <= max is deleted.
  * Note that this function takes the reference to the hash table view of the
  * sorted set, in order to remove the elements from the hash table too. */
+/// 删除跳表分值在range范围内的节点,同时删除dict中对应的value
 unsigned long zslDeleteRangeByScore(zskiplist *zsl, zrangespec *range, dict *dict) {
     zskiplistNode *update[ZSKIPLIST_MAXLEVEL], *x;
     unsigned long removed = 0;
@@ -354,6 +358,7 @@ unsigned long zslDeleteRangeByScore(zskiplist *zsl, zrangespec *range, dict *dic
 
     x = zsl->header;
     for (i = zsl->level-1; i >= 0; i--) {
+        /// 寻找第一个大于range->min的节点
         while (x->level[i].forward && (range->minex ?
             x->level[i].forward->score <= range->min :
             x->level[i].forward->score < range->min))
@@ -365,6 +370,7 @@ unsigned long zslDeleteRangeByScore(zskiplist *zsl, zrangespec *range, dict *dic
     x = x->level[0].forward;
 
     /* Delete nodes while in range. */
+    /// 从第一个在范围里的节点开始,删除到最后一个在范围里的节点 
     while (x &&
            (range->maxex ? x->score < range->max : x->score <= range->max))
     {
@@ -378,6 +384,7 @@ unsigned long zslDeleteRangeByScore(zskiplist *zsl, zrangespec *range, dict *dic
     return removed;
 }
 
+/// 从跳表中删除字典序范围range内的元素,同时删除dict中对应的值
 unsigned long zslDeleteRangeByLex(zskiplist *zsl, zlexrangespec *range, dict *dict) {
     zskiplistNode *update[ZSKIPLIST_MAXLEVEL], *x;
     unsigned long removed = 0;
@@ -409,6 +416,7 @@ unsigned long zslDeleteRangeByLex(zskiplist *zsl, zlexrangespec *range, dict *di
 
 /* Delete all the elements with rank between start and end from the skiplist.
  * Start and end are inclusive. Note that start and end need to be 1-based */
+/// 删除跳表给定节点范围[start,end]内的元素,同时删除dict中的value
 unsigned long zslDeleteRangeByRank(zskiplist *zsl, unsigned int start, unsigned int end, dict *dict) {
     zskiplistNode *update[ZSKIPLIST_MAXLEVEL], *x;
     unsigned long traversed = 0, removed = 0;
@@ -417,12 +425,14 @@ unsigned long zslDeleteRangeByRank(zskiplist *zsl, unsigned int start, unsigned 
     x = zsl->header;
     for (i = zsl->level-1; i >= 0; i--) {
         while (x->level[i].forward && (traversed + x->level[i].span) < start) {
+            /// traverset 保存了start到level[0].head的节点数
             traversed += x->level[i].span;
             x = x->level[i].forward;
         }
         update[i] = x;
     }
 
+    /// ????
     traversed++;
     x = x->level[0].forward;
     while (x && traversed <= end) {
@@ -441,12 +451,14 @@ unsigned long zslDeleteRangeByRank(zskiplist *zsl, unsigned int start, unsigned 
  * Returns 0 when the element cannot be found, rank otherwise.
  * Note that the rank is 1-based due to the span of zsl->header to the
  * first element. */
+/// 返回跳表中分值为score,数据为o的节点距离头节点的距离(节点数)
 unsigned long zslGetRank(zskiplist *zsl, double score, robj *o) {
     zskiplistNode *x;
     unsigned long rank = 0;
     int i;
 
     x = zsl->header;
+    /// 从高层遍历到底层,就好像从高速公路到国道到省道到乡间小路
     for (i = zsl->level-1; i >= 0; i--) {
         while (x->level[i].forward &&
             (x->level[i].forward->score < score ||
@@ -457,6 +469,7 @@ unsigned long zslGetRank(zskiplist *zsl, double score, robj *o) {
         }
 
         /* x might be equal to zsl->header, so test if obj is non-NULL */
+        /// 走高速公路就到了,很好
         if (x->obj && equalStringObjects(x->obj,o)) {
             return rank;
         }
@@ -465,6 +478,7 @@ unsigned long zslGetRank(zskiplist *zsl, double score, robj *o) {
 }
 
 /* Finds an element by its rank. The rank argument needs to be 1-based. */
+/// 返回跳表中第rank个节点
 zskiplistNode* zslGetElementByRank(zskiplist *zsl, unsigned long rank) {
     zskiplistNode *x;
     unsigned long traversed = 0;
@@ -485,6 +499,7 @@ zskiplistNode* zslGetElementByRank(zskiplist *zsl, unsigned long rank) {
 }
 
 /* Populate the rangespec according to the objects min and max. */
+/// 将min,max表示的区间写入spec.'('表示不包括,开区间,'['表示包括,闭区间
 static int zslParseRange(robj *min, robj *max, zrangespec *spec) {
     char *eptr;
     spec->minex = spec->maxex = 0;
@@ -495,16 +510,17 @@ static int zslParseRange(robj *min, robj *max, zrangespec *spec) {
      * ZRANGEBYSCORE zset 1.5 2.5 will instead match min <= x <= max */
     if (min->encoding == REDIS_ENCODING_INT) {
         spec->min = (long)min->ptr;
-    } else {
+    } else { /// REDIS_ENCODING_RAW(string)
         if (((char*)min->ptr)[0] == '(') {
             spec->min = strtod((char*)min->ptr+1,&eptr);
             if (eptr[0] != '\0' || isnan(spec->min)) return REDIS_ERR;
             spec->minex = 1;
-        } else {
+        } else {  /// == '['
             spec->min = strtod((char*)min->ptr,&eptr);
             if (eptr[0] != '\0' || isnan(spec->min)) return REDIS_ERR;
         }
     }
+
     if (max->encoding == REDIS_ENCODING_INT) {
         spec->max = (long)max->ptr;
     } else {
@@ -536,6 +552,7 @@ static int zslParseRange(robj *min, robj *max, zrangespec *spec) {
   *
   * If the string is not a valid range REDIS_ERR is returned, and the value
   * of *dest and *ex is undefined. */
+/// 将item代表的意思解释并写入dest
 int zslParseLexRangeItem(robj *item, robj **dest, int *ex) {
     char *c = item->ptr;
 
@@ -570,6 +587,7 @@ int zslParseLexRangeItem(robj *item, robj **dest, int *ex) {
  * Return REDIS_OK on success. On error REDIS_ERR is returned.
  * When OK is returned the structure must be freed with zslFreeLexRange(),
  * otherwise no release is needed. */
+/// 将字典序列min,max解释并写入spec
 static int zslParseLexRange(robj *min, robj *max, zlexrangespec *spec) {
     /* The range can't be valid if objects are integer encoded.
      * Every item must start with ( or [. */

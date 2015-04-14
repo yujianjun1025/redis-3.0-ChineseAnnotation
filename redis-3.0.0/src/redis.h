@@ -1203,6 +1203,7 @@ typedef struct {
 } zrangespec;
 
 /* Struct to hold an inclusive/exclusive range spec by lexicographic comparison. */
+/// 字典序范围,min为字典序小的字符串,max为字典序大的字符串
 typedef struct {
     robj *min, *max;  /* May be set to shared.(minstring|maxstring) */
     int minex, maxex; /* are min or max exclusive? */
