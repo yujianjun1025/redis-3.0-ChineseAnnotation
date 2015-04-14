@@ -70,7 +70,7 @@ typedef struct dictType {  /// dict操作数据函数
 typedef struct dictht {
     dictEntry **table;
     unsigned long size;   /// slot数
-    unsigned long sizemask;
+    unsigned long sizemask; /// size - 1,2^n-1,每次hash(k)&sizemask,即hash(k) % size
     unsigned long used;   /// bucket数,可能大于size
 } dictht;
 

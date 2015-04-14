@@ -580,21 +580,22 @@ struct sharedObjectsStruct {
 };
 
 /* ZSETs use a specialized version of Skiplists */
+/// 跳表的一个节点
 typedef struct zskiplistNode {
-    robj *obj;
-    double score;
-    struct zskiplistNode *backward;
+    robj *obj;  /// 保存的数据,这里为redis obj
+    double score;  /// 分值,根据这个进行排序
+    struct zskiplistNode *backward;  /// 最底层,指向前一个节点
     struct zskiplistLevel {
-        struct zskiplistNode *forward;
-        unsigned int span;
-    } level[];
+        struct zskiplistNode *forward;   /// 指向该层下一个节点
+        unsigned int span;   /// 表示从该节点到下一个节点要走过多少个第一层的节点
+    } level[];  /// 层,高度随机
 } zskiplistNode;
 
 typedef struct zskiplist {
-    struct zskiplistNode *header, *tail;
-    unsigned long length;
-    int level;
-} zskiplist;
+    struct zskiplistNode *header, *tail; /// 跳表头节点和尾节点
+    unsigned long length;  /// 跳表长度
+    int level; /// 跳表层数
+} zskiplist; /// 跳表数据结构
 
 typedef struct zset {
     dict *dict;
@@ -1197,6 +1198,7 @@ unsigned long aofRewriteBufferSize(void);
 /* Struct to hold a inclusive/exclusive range spec by score comparison. */
 typedef struct {
     double min, max;
+    /// exclusive 排除
     int minex, maxex; /* are min or max exclusive? */
 } zrangespec;
 
