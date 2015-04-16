@@ -90,7 +90,7 @@ endif
 
 ifeq ($(MALLOC),jemalloc)
 	DEPENDENCY_TARGETS+= jemalloc
-	FINAL_CFLAGS+= -DUSE_JEMALLOC -I../deps/jemalloc/include
+	FINAL_CFLAGS+= -DUSE_JEMALLOC -I../deps/jemalloc/include -L../deps/jemalloc/lib
 	FINAL_LIBS+= ../deps/jemalloc/lib/libjemalloc.a -ldl
 endif
 
@@ -168,6 +168,8 @@ endif
 
 # redis-server
 $(REDIS_SERVER_NAME): $(REDIS_SERVER_OBJ)
+	echo FINAL_LIBS=$(FINAL_LIBS)
+	echo FINAL_CFLAGS=$(FINAL_CFLAGS)
 	$(REDIS_LD) -o $@ $^ ../deps/hiredis/libhiredis.a ../deps/lua/src/liblua.a $(FINAL_LIBS)
 
 # redis-sentinel

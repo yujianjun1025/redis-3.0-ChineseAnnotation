@@ -607,6 +607,7 @@ static int zslParseLexRange(robj *min, robj *max, zlexrangespec *spec) {
 
 /* Free a lex range structure, must be called only after zelParseLexRange()
  * populated the structure with success (REDIS_OK returned). */
+/// 释放字典序范围spec
 void zslFreeLexRange(zlexrangespec *spec) {
     decrRefCount(spec->min);
     decrRefCount(spec->max);
@@ -615,6 +616,7 @@ void zslFreeLexRange(zlexrangespec *spec) {
 /* This is just a wrapper to compareStringObjects() that is able to
  * handle shared.minstring and shared.maxstring as the equivalent of
  * -inf and +inf for strings */
+/// 以字典序比较a,b,相等返回0,a<b返回-1,a>b返回1
 int compareStringObjectsForLexRange(robj *a, robj *b) {
     if (a == b) return 0; /* This makes sure that we handle inf,inf and
                              -inf,-inf ASAP. One special case less. */
@@ -623,12 +625,14 @@ int compareStringObjectsForLexRange(robj *a, robj *b) {
     return compareStringObjects(a,b);
 }
 
+/// 以字典序比较value是否大于(等于)范围spec里的最小值
 static int zslLexValueGteMin(robj *value, zlexrangespec *spec) {
     return spec->minex ?
         (compareStringObjectsForLexRange(value,spec->min) > 0) :
         (compareStringObjectsForLexRange(value,spec->min) >= 0);
 }
 
+/// 以字典序比较value是否小于(等于)范围spec里的最大值
 static int zslLexValueLteMax(robj *value, zlexrangespec *spec) {
     return spec->maxex ?
         (compareStringObjectsForLexRange(value,spec->max) < 0) :
@@ -636,6 +640,8 @@ static int zslLexValueLteMax(robj *value, zlexrangespec *spec) {
 }
 
 /* Returns if there is a part of the zset is in the lex range. */
+/// 返回跳表zsl是否在字典序范围range内
+/// ???? 问题是跳表是按照分值排序的,元素是无序的啊!
 int zslIsInLexRange(zskiplist *zsl, zlexrangespec *range) {
     zskiplistNode *x;
 
@@ -655,6 +661,7 @@ int zslIsInLexRange(zskiplist *zsl, zlexrangespec *range) {
 
 /* Find the first node that is contained in the specified lex range.
  * Returns NULL when no element is contained in the range. */
+/// 返回跳表zsk中第一个在字典序范围range里的节点,类似zslFirstInRange
 zskiplistNode *zslFirstInLexRange(zskiplist *zsl, zlexrangespec *range) {
     zskiplistNode *x;
     int i;
@@ -681,6 +688,7 @@ zskiplistNode *zslFirstInLexRange(zskiplist *zsl, zlexrangespec *range) {
 
 /* Find the last node that is contained in the specified range.
  * Returns NULL when no element is contained in the range. */
+/// 返回跳表zsk中最后一个在字典序范围range里的节点,类似zslFirstInRange
 zskiplistNode *zslLastInLexRange(zskiplist *zsl, zlexrangespec *range) {
     zskiplistNode *x;
     int i;
