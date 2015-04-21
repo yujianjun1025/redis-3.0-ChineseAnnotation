@@ -37,10 +37,16 @@
  * to a real list. Only check raw-encoded objects because integer encoded
  * objects are never too long. */
 void listTypeTryConversion(robj *subject, robj *value) {
+    /// subject必须是ZIPLIST编码
     if (subject->encoding != REDIS_ENCODING_ZIPLIST) return;
+
+    /// 节点value长度超过了redis ZIPLIST的最大值长度
     if (sdsEncodedObject(value) &&
         sdslen(value->ptr) > server.list_max_ziplist_value)
-            listTypeConvert(subject,REDIS_ENCODING_LINKEDLIST);
+    {
+        /// 将ZIPLIST转为普通链表
+        listTypeConvert(subject,REDIS_ENCODING_LINKEDLIST);
+    }
 }
 
 /* The function pushes an element to the specified list object 'subject',
@@ -48,19 +54,25 @@ void listTypeTryConversion(robj *subject, robj *value) {
  *
  * There is no need for the caller to increment the refcount of 'value' as
  * the function takes care of it if needed. */
+/// 将value插入到subject链表(ZIPLIST or LINKLIST)的头部或者尾部
 void listTypePush(robj *subject, robj *value, int where) {
     /* Check if we need to convert the ziplist */
+    /// 先查节点数据长度是否过长
     listTypeTryConversion(subject,value);
+
+    /// 再查压缩链表是否太长了,超过了redis ZIPLIST最大的链表长度
     if (subject->encoding == REDIS_ENCODING_ZIPLIST &&
         ziplistLen(subject->ptr) >= server.list_max_ziplist_entries)
             listTypeConvert(subject,REDIS_ENCODING_LINKEDLIST);
 
     if (subject->encoding == REDIS_ENCODING_ZIPLIST) {
+        /// 按照ZIPLIST的实现进行节点插入
         int pos = (where == REDIS_HEAD) ? ZIPLIST_HEAD : ZIPLIST_TAIL;
         value = getDecodedObject(value);
         subject->ptr = ziplistPush(subject->ptr,value->ptr,sdslen(value->ptr),pos);
         decrRefCount(value);
     } else if (subject->encoding == REDIS_ENCODING_LINKEDLIST) {
+        /// 按照标准链表进行节点插入
         if (where == REDIS_HEAD) {
             listAddNodeHead(subject->ptr,value);
         } else {
@@ -72,6 +84,7 @@ void listTypePush(robj *subject, robj *value, int where) {
     }
 }
 
+/// 弹出链表subject 头部或者尾部的节点
 robj *listTypePop(robj *subject, int where) {
     robj *value = NULL;
     if (subject->encoding == REDIS_ENCODING_ZIPLIST) {
@@ -109,6 +122,7 @@ robj *listTypePop(robj *subject, int where) {
     return value;
 }
 
+/// 返回链表subject的长度(节点数)
 unsigned long listTypeLength(robj *subject) {
     if (subject->encoding == REDIS_ENCODING_ZIPLIST) {
         return ziplistLen(subject->ptr);
@@ -120,6 +134,7 @@ unsigned long listTypeLength(robj *subject) {
 }
 
 /* Initialize an iterator at the specified index. */
+/// 根据链表subject类型返回index节点的迭代器,遍历方向为direction
 listTypeIterator *listTypeInitIterator(robj *subject, long index, unsigned char direction) {
     listTypeIterator *li = zmalloc(sizeof(listTypeIterator));
     li->subject = subject;
@@ -136,6 +151,7 @@ listTypeIterator *listTypeInitIterator(robj *subject, long index, unsigned char 
 }
 
 /* Clean up the iterator. */
+/// 释放迭代器li
 void listTypeReleaseIterator(listTypeIterator *li) {
     zfree(li);
 }
@@ -143,6 +159,7 @@ void listTypeReleaseIterator(listTypeIterator *li) {
 /* Stores pointer to current the entry in the provided entry structure
  * and advances the position of the iterator. Returns 1 when the current
  * entry is in fact an entry, 0 otherwise. */
+/// 迭代器li的下一个节点写入到entry中,返回下一个节点是否非空
 int listTypeNext(listTypeIterator *li, listTypeEntry *entry) {
     /* Protect from converting when iterating */
     redisAssert(li->subject->encoding == li->encoding);
@@ -173,6 +190,7 @@ int listTypeNext(listTypeIterator *li, listTypeEntry *entry) {
 }
 
 /* Return entry or NULL at the current position of the iterator. */
+/// 根据节点entry类型返回obj
 robj *listTypeGet(listTypeEntry *entry) {
     listTypeIterator *li = entry->li;
     robj *value = NULL;
@@ -198,6 +216,7 @@ robj *listTypeGet(listTypeEntry *entry) {
     return value;
 }
 
+/// 在entry的前一个或者后一个节点插入value,根据where决定。注意:不是头部或者尾部
 void listTypeInsert(listTypeEntry *entry, robj *value, int where) {
     robj *subject = entry->li->subject;
     if (entry->li->encoding == REDIS_ENCODING_ZIPLIST) {
@@ -208,11 +227,14 @@ void listTypeInsert(listTypeEntry *entry, robj *value, int where) {
             /* When we insert after the current element, but the current element
              * is the tail of the list, we need to do a push. */
             if (next == NULL) {
+                /// 直接在尾部插入
                 subject->ptr = ziplistPush(subject->ptr,value->ptr,sdslen(value->ptr),REDIS_TAIL);
             } else {
+                /// 在ZIPLIST节点后插入
                 subject->ptr = ziplistInsert(subject->ptr,next,value->ptr,sdslen(value->ptr));
             }
         } else {
+            /// 在ZIPLIST节点前插入
             subject->ptr = ziplistInsert(subject->ptr,entry->zi,value->ptr,sdslen(value->ptr));
         }
         decrRefCount(value);
@@ -229,6 +251,7 @@ void listTypeInsert(listTypeEntry *entry, robj *value, int where) {
 }
 
 /* Compare the given object with the entry at the current position. */
+/// 对比entry节点和obj是否相同
 int listTypeEqual(listTypeEntry *entry, robj *o) {
     listTypeIterator *li = entry->li;
     if (li->encoding == REDIS_ENCODING_ZIPLIST) {
@@ -242,6 +265,7 @@ int listTypeEqual(listTypeEntry *entry, robj *o) {
 }
 
 /* Delete the element pointed to. */
+/// 删除entry节点并根据entry持有的迭代器调整下一个节点
 void listTypeDelete(listTypeEntry *entry) {
     listTypeIterator *li = entry->li;
     if (li->encoding == REDIS_ENCODING_ZIPLIST) {
@@ -266,6 +290,7 @@ void listTypeDelete(listTypeEntry *entry) {
     }
 }
 
+/// 将subject转为enc编码的LIST,一般为ZIPLIST 转 LINKLIST
 void listTypeConvert(robj *subject, int enc) {
     listTypeIterator *li;
     listTypeEntry entry;
@@ -277,6 +302,7 @@ void listTypeConvert(robj *subject, int enc) {
 
         /* listTypeGet returns a robj with incremented refcount */
         li = listTypeInitIterator(subject,0,REDIS_TAIL);
+        /// 遍历旧的LIST,将节点value插入到新的LINKLIST中
         while (listTypeNext(li,&entry)) listAddNodeTail(l,listTypeGet(&entry));
         listTypeReleaseIterator(li);
 

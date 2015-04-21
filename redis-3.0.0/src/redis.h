@@ -953,8 +953,8 @@ typedef struct {
     robj *subject;
     unsigned char encoding;
     unsigned char direction; /* Iteration direction */
-    unsigned char *zi;
-    listNode *ln;
+    unsigned char *zi;   /// 如果是ZIPLIST就存在这
+    listNode *ln;        /// 如果是LINKLIST就存在这
 } listTypeIterator;
 
 /* Structure for an entry while iterating over a list. */
