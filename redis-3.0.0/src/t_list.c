@@ -1003,6 +1003,7 @@ void signalListAsReady(redisDb *db, robj *key) {
  * should be undone as the client was not served: This only happens for
  * BRPOPLPUSH that fails to push the value to the destination key as it is
  * of the wrong type. */
+/// 根据有没有目标key(BLPOP/BRPOP没有目标key,BRPOPLPUSH有目标key),进行对应的操作并将结果返回给客户端
 int serveClientBlockedOnList(redisClient *receiver, robj *key, robj *dstkey, redisDb *db, robj *value, int where)
 {
     robj *argv[3];
@@ -1018,6 +1019,7 @@ int serveClientBlockedOnList(redisClient *receiver, robj *key, robj *dstkey, red
 
         /* BRPOP/BLPOP */
         addReplyMultiBulkLen(receiver,2);
+        /// 返回key和value
         addReplyBulk(receiver,key);
         addReplyBulk(receiver,value);
     } else {
@@ -1034,6 +1036,8 @@ int serveClientBlockedOnList(redisClient *receiver, robj *key, robj *dstkey, red
                 db->id,argv,2,
                 REDIS_PROPAGATE_AOF|
                 REDIS_PROPAGATE_REPL);
+            /// 将RPOP弹出来的value PUSH到dstkey中
+            /// 只会返回value
             rpoplpushHandlePush(receiver,dstkey,dstobj,
                 value);
             /* Propagate the LPUSH operation. */
@@ -1063,6 +1067,7 @@ int serveClientBlockedOnList(redisClient *receiver, robj *key, robj *dstkey, red
  * serve clients accordingly. Note that the function will iterate again and
  * again as a result of serving BRPOPLPUSH we can have new blocking clients
  * to serve because of the PUSH side of BRPOPLPUSH. */
+/// 将server已经就绪的key返回给client
 void handleClientsBlockedOnLists(void) {
     while(listLength(server.ready_keys) != 0) {
         list *l;
@@ -1092,6 +1097,7 @@ void handleClientsBlockedOnLists(void) {
                  * this key, from the first blocked to the last. */
                 de = dictFind(rl->db->blocking_keys,rl->key);
                 if (de) {
+                    /// 得到被这个key block住的客户端列表
                     list *clients = dictGetVal(de);
                     int numclients = listLength(clients);
 
@@ -1109,6 +1115,10 @@ void handleClientsBlockedOnLists(void) {
                              * freed by the next unblockClient()
                              * call. */
                             if (dstkey) incrRefCount(dstkey);
+    
+                            /// 将client的阻塞状态解除,一个clinet只可能在一个blpop或者brpop操作中
+                            /// 被一个或者多个key阻塞,一旦这些key中的某一个就绪,client立刻解除阻塞,
+                            /// 所有的client->block_key都会被删除
                             unblockClient(receiver);
 
                             if (serveClientBlockedOnList(receiver,
@@ -1117,6 +1127,7 @@ void handleClientsBlockedOnLists(void) {
                             {
                                 /* If we failed serving the client we need
                                  * to also undo the POP operation. */
+                                /// 操作失败,将弹出的value重新push进去
                                     listTypePush(o,value,where);
                             }
 
@@ -1143,6 +1154,7 @@ void handleClientsBlockedOnLists(void) {
 }
 
 /* Blocking RPOP/LPOP */
+/// BLPOP/BRPOP key [key ...] timeout
 void blockingPopGenericCommand(redisClient *c, int where) {
     robj *o;
     mstime_t timeout;
@@ -1158,6 +1170,7 @@ void blockingPopGenericCommand(redisClient *c, int where) {
                 addReply(c,shared.wrongtypeerr);
                 return;
             } else {
+                /// 只要有一个key当前的list非空,马上弹出并返回
                 if (listTypeLength(o) != 0) {
                     /* Non empty list, this is like a non normal [LR]POP. */
                     char *event = (where == REDIS_HEAD) ? "lpop" : "rpop";
@@ -1196,6 +1209,7 @@ void blockingPopGenericCommand(redisClient *c, int where) {
     }
 
     /* If the list is empty or the key does not exists we must block */
+    /// 所有的key list都是空的,要阻塞住了
     blockForKeys(c, c->argv + 1, c->argc - 2, timeout, NULL);
 }
 
@@ -1207,6 +1221,7 @@ void brpopCommand(redisClient *c) {
     blockingPopGenericCommand(c,REDIS_TAIL);
 }
 
+/// BRPOPLPUSH source destination timeout
 void brpoplpushCommand(redisClient *c) {
     mstime_t timeout;
 
@@ -1220,14 +1235,14 @@ void brpoplpushCommand(redisClient *c) {
             /* Blocking against an empty list in a multi state
              * returns immediately. */
             addReply(c, shared.nullbulk);
-        } else {
+        } else {  /// block操作
             /* The list is empty and the client blocks. */
             blockForKeys(c, c->argv + 1, 1, timeout, c->argv[2]);
         }
     } else {
         if (key->type != REDIS_LIST) {
             addReply(c, shared.wrongtypeerr);
-        } else {
+        } else { /// key里有数据,直接返回
             /* The list exists and has elements, so
              * the regular rpoplpushCommand is executed. */
             redisAssertWithInfo(c,key,listTypeLength(key) > 0);
