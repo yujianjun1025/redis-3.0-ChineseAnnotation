@@ -716,6 +716,7 @@ zskiplistNode *zslLastInLexRange(zskiplist *zsl, zlexrangespec *range) {
  * Ziplist-backed sorted set API
  *----------------------------------------------------------------------------*/
 
+/// 返回sptr指向的ziplist里的sort set分值
 double zzlGetScore(unsigned char *sptr) {
     unsigned char *vstr;
     unsigned int vlen;
@@ -740,6 +741,7 @@ double zzlGetScore(unsigned char *sptr) {
 /* Return a ziplist element as a Redis string object.
  * This simple abstraction can be used to simplifies some code at the
  * cost of some performance. */
+/// 返回sptr指向的ziplist的obj
 robj *ziplistGetObject(unsigned char *sptr) {
     unsigned char *vstr;
     unsigned int vlen;
@@ -756,6 +758,7 @@ robj *ziplistGetObject(unsigned char *sptr) {
 }
 
 /* Compare element in sorted set with given element. */
+/// 对比eptr指向的ziplist的元素与clen长的cstr
 int zzlCompareElements(unsigned char *eptr, unsigned char *cstr, unsigned int clen) {
     unsigned char *vstr;
     unsigned int vlen;
@@ -766,6 +769,7 @@ int zzlCompareElements(unsigned char *eptr, unsigned char *cstr, unsigned int cl
     redisAssert(ziplistGet(eptr,&vstr,&vlen,&vlong));
     if (vstr == NULL) {
         /* Store string representation of long long in buf. */
+        /// 取出来是long long类型,转为字符串,直接比较字符串即可
         vlen = ll2string((char*)vbuf,sizeof(vbuf),vlong);
         vstr = vbuf;
     }
@@ -776,18 +780,24 @@ int zzlCompareElements(unsigned char *eptr, unsigned char *cstr, unsigned int cl
     return cmp;
 }
 
+/// 返回ziplist编码的sort set的长度
 unsigned int zzlLength(unsigned char *zl) {
+    /// score value
     return ziplistLen(zl)/2;
 }
 
 /* Move to next entry based on the values in eptr and sptr. Both are set to
  * NULL when there is no next entry. */
+/// 取出sptr的下一组score value节点,存入sptr和eptr中
 void zzlNext(unsigned char *zl, unsigned char **eptr, unsigned char **sptr) {
+    /// eptr: element ptr sptr: score ptr
     unsigned char *_eptr, *_sptr;
     redisAssert(*eptr != NULL && *sptr != NULL);
 
+    /// 拿到zl中sptr的下一个节点,存在eptr中
     _eptr = ziplistNext(zl,*sptr);
     if (_eptr != NULL) {
+        /// 再拿eptr的下一个节点
         _sptr = ziplistNext(zl,_eptr);
         redisAssert(_sptr != NULL);
     } else {
@@ -801,6 +811,7 @@ void zzlNext(unsigned char *zl, unsigned char **eptr, unsigned char **sptr) {
 
 /* Move to the previous entry based on the values in eptr and sptr. Both are
  * set to NULL when there is no next entry. */
+/// 取出sptr的前一组score value节点,存在额eptr,sptr中
 void zzlPrev(unsigned char *zl, unsigned char **eptr, unsigned char **sptr) {
     unsigned char *_eptr, *_sptr;
     redisAssert(*eptr != NULL && *sptr != NULL);
@@ -820,6 +831,16 @@ void zzlPrev(unsigned char *zl, unsigned char **eptr, unsigned char **sptr) {
 
 /* Returns if there is a part of the zset is in range. Should only be used
  * internally by zzlFirstInRange and zzlLastInRange. */
+/// 返回ziplist是否在range范围里
+///      [begin   range     end]
+///      -----------------------
+///  +++ 0
+///  ++++++++++++ 1
+///  +++++++++++++++++++++++++++++ 1
+///         +++++++++++++ 1
+///         +++++++++++++++++++++++ 1
+///                                +++ 0
+
 int zzlIsInRange(unsigned char *zl, zrangespec *range) {
     unsigned char *p;
     double score;
@@ -846,6 +867,7 @@ int zzlIsInRange(unsigned char *zl, zrangespec *range) {
 
 /* Find pointer to the first element contained in the specified range.
  * Returns NULL when no element is contained in the range. */
+/// 返回zl中在range范围里的第一个节点
 unsigned char *zzlFirstInRange(unsigned char *zl, zrangespec *range) {
     unsigned char *eptr = ziplistIndex(zl,0), *sptr;
     double score;
@@ -874,7 +896,9 @@ unsigned char *zzlFirstInRange(unsigned char *zl, zrangespec *range) {
 
 /* Find pointer to the last element contained in the specified range.
  * Returns NULL when no element is contained in the range. */
+/// 返回zl中在range里的最后一个节点
 unsigned char *zzlLastInRange(unsigned char *zl, zrangespec *range) {
+    /// 从最后一个节点开始找
     unsigned char *eptr = ziplistIndex(zl,-2), *sptr;
     double score;
 
@@ -921,6 +945,7 @@ static int zzlLexValueLteMax(unsigned char *p, zlexrangespec *spec) {
 
 /* Returns if there is a part of the zset is in range. Should only be used
  * internally by zzlFirstInRange and zzlLastInRange. */
+/// 返回zl是否在字典序range里
 int zzlIsInLexRange(unsigned char *zl, zlexrangespec *range) {
     unsigned char *p;
 
@@ -945,6 +970,7 @@ int zzlIsInLexRange(unsigned char *zl, zlexrangespec *range) {
 
 /* Find pointer to the first element contained in the specified lex range.
  * Returns NULL when no element is contained in the range. */
+/// 返回zl中第一个在字典序里的节点
 unsigned char *zzlFirstInLexRange(unsigned char *zl, zlexrangespec *range) {
     unsigned char *eptr = ziplistIndex(zl,0), *sptr;
 
@@ -970,6 +996,7 @@ unsigned char *zzlFirstInLexRange(unsigned char *zl, zlexrangespec *range) {
 
 /* Find pointer to the last element contained in the specified lex range.
  * Returns NULL when no element is contained in the range. */
+/// 返回zl中最后一个在字典序里的节点
 unsigned char *zzlLastInLexRange(unsigned char *zl, zlexrangespec *range) {
     unsigned char *eptr = ziplistIndex(zl,-2), *sptr;
 
@@ -997,9 +1024,11 @@ unsigned char *zzlLastInLexRange(unsigned char *zl, zlexrangespec *range) {
 }
 
 unsigned char *zzlFind(unsigned char *zl, robj *ele, double *score) {
+    /// zl头节点
     unsigned char *eptr = ziplistIndex(zl,0), *sptr;
 
     ele = getDecodedObject(ele);
+    /// 只能从头遍历比对寻找
     while (eptr != NULL) {
         sptr = ziplistNext(zl,eptr);
         redisAssertWithInfo(NULL,ele,sptr != NULL);
@@ -1021,6 +1050,7 @@ unsigned char *zzlFind(unsigned char *zl, robj *ele, double *score) {
 
 /* Delete (element,score) pair from ziplist. Use local copy of eptr because we
  * don't want to modify the one given as argument. */
+/// 删除zl中eptr的element以及score
 unsigned char *zzlDelete(unsigned char *zl, unsigned char *eptr) {
     unsigned char *p = eptr;
 
@@ -1039,16 +1069,21 @@ unsigned char *zzlInsertAt(unsigned char *zl, unsigned char *eptr, robj *ele, do
     redisAssertWithInfo(NULL,ele,sdsEncodedObject(ele));
     scorelen = d2string(scorebuf,sizeof(scorebuf),score);
     if (eptr == NULL) {
+        /// eptr为空,将element及score插入到ziplist尾部
         zl = ziplistPush(zl,ele->ptr,sdslen(ele->ptr),ZIPLIST_TAIL);
         zl = ziplistPush(zl,(unsigned char*)scorebuf,scorelen,ZIPLIST_TAIL);
     } else {
         /* Keep offset relative to zl, as it might be re-allocated. */
         offset = eptr-zl;
+        /// 先插入element
         zl = ziplistInsert(zl,eptr,ele->ptr,sdslen(ele->ptr));
+        /// 更新eptr,使得eptr距离原先的zl头距离相等
         eptr = zl+offset;
 
         /* Insert score after the element. */
+        /// ziplistNext,调整插入位置在element之后
         redisAssertWithInfo(NULL,ele,(sptr = ziplistNext(zl,eptr)) != NULL);
+        /// 再插入score
         zl = ziplistInsert(zl,sptr,(unsigned char*)scorebuf,scorelen);
     }
 
@@ -1057,7 +1092,9 @@ unsigned char *zzlInsertAt(unsigned char *zl, unsigned char *eptr, robj *ele, do
 
 /* Insert (element,score) pair in ziplist. This function assumes the element is
  * not yet present in the list. */
+/// 在zl中合适的位置插入element及score
 unsigned char *zzlInsert(unsigned char *zl, robj *ele, double score) {
+    /// 从头开始
     unsigned char *eptr = ziplistIndex(zl,0), *sptr;
     double s;
 
@@ -1067,7 +1104,7 @@ unsigned char *zzlInsert(unsigned char *zl, robj *ele, double score) {
         redisAssertWithInfo(NULL,ele,sptr != NULL);
         s = zzlGetScore(sptr);
 
-        if (s > score) {
+        if (s > score) {  /// 这个位置可以插入
             /* First element with score larger than score for element to be
              * inserted. This means we should take its spot in the list to
              * maintain ordering. */
@@ -1075,6 +1112,7 @@ unsigned char *zzlInsert(unsigned char *zl, robj *ele, double score) {
             break;
         } else if (s == score) {
             /* Ensure lexicographical ordering for elements. */
+            /// 保证score相等的时候element按照字典序排列
             if (zzlCompareElements(eptr,ele->ptr,sdslen(ele->ptr)) > 0) {
                 zl = zzlInsertAt(zl,eptr,ele,score);
                 break;
@@ -1086,6 +1124,7 @@ unsigned char *zzlInsert(unsigned char *zl, robj *ele, double score) {
     }
 
     /* Push on tail of list when it was not yet inserted. */
+    /// zl为空sort set,直接在尾部插入
     if (eptr == NULL)
         zl = zzlInsertAt(zl,NULL,ele,score);
 
@@ -1093,6 +1132,7 @@ unsigned char *zzlInsert(unsigned char *zl, robj *ele, double score) {
     return zl;
 }
 
+/// 删除zl中score在range范围里的score element
 unsigned char *zzlDeleteRangeByScore(unsigned char *zl, zrangespec *range, unsigned long *deleted) {
     unsigned char *eptr, *sptr;
     double score;
@@ -1122,6 +1162,7 @@ unsigned char *zzlDeleteRangeByScore(unsigned char *zl, zrangespec *range, unsig
     return zl;
 }
 
+/// 删除zl中在字典需范围range列的element
 unsigned char *zzlDeleteRangeByLex(unsigned char *zl, zlexrangespec *range, unsigned long *deleted) {
     unsigned char *eptr, *sptr;
     unsigned long num = 0;
@@ -1151,6 +1192,7 @@ unsigned char *zzlDeleteRangeByLex(unsigned char *zl, zlexrangespec *range, unsi
 
 /* Delete all the elements with rank between start and end from the skiplist.
  * Start and end are inclusive. Note that start and end need to be 1-based */
+/// 删除zl中start到end的节点(element score算一个节点),start从1开始而不是从0
 unsigned char *zzlDeleteRangeByRank(unsigned char *zl, unsigned int start, unsigned int end, unsigned long *deleted) {
     unsigned int num = (end-start)+1;
     if (deleted) *deleted = num;
@@ -1162,6 +1204,7 @@ unsigned char *zzlDeleteRangeByRank(unsigned char *zl, unsigned int start, unsig
  * Common sorted set API
  *----------------------------------------------------------------------------*/
 
+/// 根据zobj编码返回sort set长度
 unsigned int zsetLength(robj *zobj) {
     int length = -1;
     if (zobj->encoding == REDIS_ENCODING_ZIPLIST) {
@@ -1181,6 +1224,7 @@ void zsetConvert(robj *zobj, int encoding) {
     double score;
 
     if (zobj->encoding == encoding) return;
+
     if (zobj->encoding == REDIS_ENCODING_ZIPLIST) {
         unsigned char *zl = zobj->ptr;
         unsigned char *eptr, *sptr;
@@ -1191,6 +1235,7 @@ void zsetConvert(robj *zobj, int encoding) {
         if (encoding != REDIS_ENCODING_SKIPLIST)
             redisPanic("Unknown target encoding");
 
+        /// ziplist编码转skiplist编码
         zs = zmalloc(sizeof(*zs));
         zs->dict = dictCreate(&zsetDictType,NULL);
         zs->zsl = zslCreate();
@@ -1210,8 +1255,10 @@ void zsetConvert(robj *zobj, int encoding) {
 
             /* Has incremented refcount since it was just created. */
             node = zslInsert(zs->zsl,score,ele);
+            /// 将ele作为hash key,将score作为hash value,方便在sort set中查找
             redisAssertWithInfo(NULL,zobj,dictAdd(zs->dict,ele,&node->score) == DICT_OK);
             incrRefCount(ele); /* Added to dictionary. */
+            /// 取出下一组element,score节点
             zzlNext(zl,&eptr,&sptr);
         }
 
@@ -1224,6 +1271,8 @@ void zsetConvert(robj *zobj, int encoding) {
         if (encoding != REDIS_ENCODING_ZIPLIST)
             redisPanic("Unknown target encoding");
 
+        /// SKIPLIST to ZIPLIST
+
         /* Approach similar to zslFree(), since we want to free the skiplist at
          * the same time as creating the ziplist. */
         zs = zobj->ptr;
@@ -1234,6 +1283,7 @@ void zsetConvert(robj *zobj, int encoding) {
 
         while (node) {
             ele = getDecodedObject(node->obj);
+            /// 之前就是有序的,只需每次都插入到ziplist尾部就行了
             zl = zzlInsertAt(zl,NULL,ele,node->score);
             decrRefCount(ele);
 
