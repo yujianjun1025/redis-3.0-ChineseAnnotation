@@ -1305,6 +1305,9 @@ void zsetConvert(robj *zobj, int encoding) {
  *----------------------------------------------------------------------------*/
 
 /* This generic command implements both ZADD and ZINCRBY. */
+/// ZADD key score member [score member ...]
+/// ZINCRBY key increment member
+/// 插入member,score对到sort set中,或者incr sort set中某一个member,member不存在则会插入,存在则会更新
 void zaddGenericCommand(redisClient *c, int incr) {
     static char *nanerr = "resulting score is not a number (NaN)";
     robj *key = c->argv[1];
@@ -1325,18 +1328,22 @@ void zaddGenericCommand(redisClient *c, int incr) {
      * either execute fully or nothing at all. */
     scores = zmalloc(sizeof(double)*elements);
     for (j = 0; j < elements; j++) {
+        /// 取出所有的score或者increment
         if (getDoubleFromObjectOrReply(c,c->argv[2+j*2],&scores[j],NULL)
             != REDIS_OK) goto cleanup;
     }
 
     /* Lookup the key and create the sorted set if does not exist. */
     zobj = lookupKeyWrite(c->db,key);
+    /// 还没有这个key
     if (zobj == NULL) {
+        /// sort set节点数超限制或者数据超过长度,要用skiplist来编码
         if (server.zset_max_ziplist_entries == 0 ||
             server.zset_max_ziplist_value < sdslen(c->argv[3]->ptr))
         {
             zobj = createZsetObject();
         } else {
+            /// ziplist
             zobj = createZsetZiplistObject();
         }
         dbAdd(c->db,key,zobj);
@@ -1355,6 +1362,7 @@ void zaddGenericCommand(redisClient *c, int incr) {
 
             /* Prefer non-encoded element when dealing with ziplists. */
             ele = c->argv[3+j*2];
+            /// ele已经存在
             if ((eptr = zzlFind(zobj->ptr,ele,&curscore)) != NULL) {
                 if (incr) {
                     score += curscore;
@@ -1365,16 +1373,21 @@ void zaddGenericCommand(redisClient *c, int incr) {
                 }
 
                 /* Remove and re-insert when score changed. */
+                /// 如果score变了,那么就把旧的删了,再插入新的
+                /// 可能是zadd的score和之前的不一样或者zincrby了
                 if (score != curscore) {
                     zobj->ptr = zzlDelete(zobj->ptr,eptr);
                     zobj->ptr = zzlInsert(zobj->ptr,ele,score);
                     server.dirty++;
                     updated++;
                 }
-            } else {
+            } else { /// ele不存在
+                /// 优化:先判断是否要转编码,再插入
                 /* Optimize: check if the element is too large or the list
                  * becomes too long *before* executing zzlInsert. */
+                /// 简单插入
                 zobj->ptr = zzlInsert(zobj->ptr,ele,score);
+                /// 检查是否需要转编码
                 if (zzlLength(zobj->ptr) > server.zset_max_ziplist_entries)
                     zsetConvert(zobj,REDIS_ENCODING_SKIPLIST);
                 if (sdslen(ele->ptr) > server.zset_max_ziplist_value)
@@ -1388,11 +1401,13 @@ void zaddGenericCommand(redisClient *c, int incr) {
             dictEntry *de;
 
             ele = c->argv[3+j*2] = tryObjectEncoding(c->argv[3+j*2]);
+            /// 用哈希表查,时间是O(1)
             de = dictFind(zs->dict,ele);
-            if (de != NULL) {
+            if (de != NULL) { /// member已经存在
                 curobj = dictGetKey(de);
                 curscore = *(double*)dictGetVal(de);
 
+                /// score增加incr 
                 if (incr) {
                     score += curscore;
                     if (isnan(score)) {
@@ -1414,7 +1429,7 @@ void zaddGenericCommand(redisClient *c, int incr) {
                     server.dirty++;
                     updated++;
                 }
-            } else {
+            } else { /// member不存在
                 znode = zslInsert(zs->zsl,score,ele);
                 incrRefCount(ele); /* Inserted in skiplist. */
                 redisAssertWithInfo(c,NULL,dictAdd(zs->dict,ele,&znode->score) == DICT_OK);
@@ -1427,8 +1442,10 @@ void zaddGenericCommand(redisClient *c, int incr) {
         }
     }
     if (incr) /* ZINCRBY */
+        /// 返回现在的score
         addReplyDouble(c,score);
     else /* ZADD */
+        /// 返回新增的member数
         addReplyLongLong(c,added);
 
 cleanup:
@@ -1440,14 +1457,17 @@ cleanup:
     }
 }
 
+/// ZADD key score member [score member...]
 void zaddCommand(redisClient *c) {
     zaddGenericCommand(c,0);
 }
 
+/// ZINCRBY key increment member
 void zincrbyCommand(redisClient *c) {
     zaddGenericCommand(c,1);
 }
 
+/// ZREM key member [member...]
 void zremCommand(redisClient *c) {
     robj *key = c->argv[1];
     robj *zobj;
@@ -1462,6 +1482,7 @@ void zremCommand(redisClient *c) {
         for (j = 2; j < c->argc; j++) {
             if ((eptr = zzlFind(zobj->ptr,c->argv[j],NULL)) != NULL) {
                 deleted++;
+                /// 删[element,score]
                 zobj->ptr = zzlDelete(zobj->ptr,eptr);
                 if (zzlLength(zobj->ptr) == 0) {
                     dbDelete(c->db,key);
@@ -1487,7 +1508,9 @@ void zremCommand(redisClient *c) {
                 /* Delete from the hash table */
                 dictDelete(zs->dict,c->argv[j]);
                 if (htNeedsResize(zs->dict)) dictResize(zs->dict);
+
                 if (dictSize(zs->dict) == 0) {
+                    /// 删除key
                     dbDelete(c->db,key);
                     keyremoved = 1;
                     break;
@@ -1505,6 +1528,7 @@ void zremCommand(redisClient *c) {
         signalModifiedKey(c->db,key);
         server.dirty += deleted;
     }
+    /// 返回删除的节点数
     addReplyLongLong(c,deleted);
 }
 
@@ -1512,6 +1536,8 @@ void zremCommand(redisClient *c) {
 #define ZRANGE_RANK 0
 #define ZRANGE_SCORE 1
 #define ZRANGE_LEX 2
+
+/// ZREMRANGEBY[SOCRE/LEX/RANK] key min max
 void zremrangeGenericCommand(redisClient *c, int rangetype) {
     robj *key = c->argv[1];
     robj *zobj;
@@ -1522,6 +1548,7 @@ void zremrangeGenericCommand(redisClient *c, int rangetype) {
     long start, end, llen;
 
     /* Step 1: Parse the range. */
+    /// 根据range的类型,解析对应的range
     if (rangetype == ZRANGE_RANK) {
         if ((getLongFromObjectOrReply(c,c->argv[2],&start,NULL) != REDIS_OK) ||
             (getLongFromObjectOrReply(c,c->argv[3],&end,NULL) != REDIS_OK))
@@ -1542,6 +1569,7 @@ void zremrangeGenericCommand(redisClient *c, int rangetype) {
     if ((zobj = lookupKeyWriteOrReply(c,key,shared.czero)) == NULL ||
         checkType(c,zobj,REDIS_ZSET)) goto cleanup;
 
+    /// 将rank范围约束在sort set的范围里
     if (rangetype == ZRANGE_RANK) {
         /* Sanitize indexes. */
         llen = zsetLength(zobj);
@@ -1559,6 +1587,7 @@ void zremrangeGenericCommand(redisClient *c, int rangetype) {
     }
 
     /* Step 3: Perform the range deletion operation. */
+    /// 根据编码执行范围删除操作
     if (zobj->encoding == REDIS_ENCODING_ZIPLIST) {
         switch(rangetype) {
         case ZRANGE_RANK:
@@ -1589,6 +1618,7 @@ void zremrangeGenericCommand(redisClient *c, int rangetype) {
             break;
         }
         if (htNeedsResize(zs->dict)) dictResize(zs->dict);
+
         if (dictSize(zs->dict) == 0) {
             dbDelete(c->db,key);
             keyremoved = 1;
@@ -1606,6 +1636,7 @@ void zremrangeGenericCommand(redisClient *c, int rangetype) {
             notifyKeyspaceEvent(REDIS_NOTIFY_GENERIC,"del",key,c->db->id);
     }
     server.dirty += deleted;
+    /// 返回删除的member数
     addReplyLongLong(c,deleted);
 
 cleanup:
@@ -1625,7 +1656,7 @@ void zremrangebylexCommand(redisClient *c) {
 }
 
 typedef struct {
-    robj *subject;
+    robj *subject; /// 这就是redis 那个key
     int type; /* Set, sorted set */
     int encoding;
     double weight;
@@ -1683,6 +1714,7 @@ typedef struct {
 typedef union _iterset iterset;
 typedef union _iterzset iterzset;
 
+/// 根据op里的key的类型(set还是sort set)以及编码初始化对应的迭代器并放入op中
 void zuiInitIterator(zsetopsrc *op) {
     if (op->subject == NULL)
         return;
@@ -1719,6 +1751,7 @@ void zuiInitIterator(zsetopsrc *op) {
     }
 }
 
+/// 根据op里的类型及编码清理迭代器
 void zuiClearIterator(zsetopsrc *op) {
     if (op->subject == NULL)
         return;
@@ -1746,6 +1779,7 @@ void zuiClearIterator(zsetopsrc *op) {
     }
 }
 
+/// 返回op里对应的set的长度
 int zuiLength(zsetopsrc *op) {
     if (op->subject == NULL)
         return 0;
@@ -1776,13 +1810,16 @@ int zuiLength(zsetopsrc *op) {
 /* Check if the current value is valid. If so, store it in the passed structure
  * and move to the next element. If not valid, this means we have reached the
  * end of the structure and can abort. */
+/// 将op的下一个节点的值写入val中,返回是否成功
 int zuiNext(zsetopsrc *op, zsetopval *val) {
     if (op->subject == NULL)
         return 0;
 
+    /// ????脏的obj...
     if (val->flags & OPVAL_DIRTY_ROBJ)
         decrRefCount(val->ele);
 
+    /// 将val清零
     memset(val,0,sizeof(zsetopval));
 
     if (op->type == REDIS_SET) {
@@ -1793,7 +1830,7 @@ int zuiNext(zsetopsrc *op, zsetopval *val) {
             if (!intsetGet(it->is.is,it->is.ii,&ell))
                 return 0;
             val->ell = ell;
-            val->score = 1.0;
+            val->score = 1.0; /// 普通set的score都是1.0
 
             /* Move to next element. */
             it->is.ii++;
@@ -1836,9 +1873,10 @@ int zuiNext(zsetopsrc *op, zsetopval *val) {
     return 1;
 }
 
+/// ????????????
 int zuiLongLongFromValue(zsetopval *val) {
     if (!(val->flags & OPVAL_DIRTY_LL)) {
-        val->flags |= OPVAL_DIRTY_LL;
+        val->flags |= OPVAL_DIRTY_LL;  /// 将ll标志为脏,因为可能会在其他地方被修改
 
         if (val->ele != NULL) {
             if (val->ele->encoding == REDIS_ENCODING_INT) {
