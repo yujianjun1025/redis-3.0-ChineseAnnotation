@@ -41,6 +41,7 @@ void slotToKeyFlush(void);
  * C-level DB API
  *----------------------------------------------------------------------------*/
 
+/// 返回db中key对应的redis obj
 robj *lookupKey(redisDb *db, robj *key) {
     dictEntry *de = dictFind(db->dict,key->ptr);
     if (de) {
@@ -51,35 +52,47 @@ robj *lookupKey(redisDb *db, robj *key) {
          * a copy on write madness. */
         if (server.rdb_child_pid == -1 && server.aof_child_pid == -1)
             val->lru = LRU_CLOCK();
+
         return val;
     } else {
         return NULL;
     }
 }
 
+/// 在db中寻找key对应的redis obj用于读,会对命中/不命中状态做记录
 robj *lookupKeyRead(redisDb *db, robj *key) {
     robj *val;
 
     expireIfNeeded(db,key);
     val = lookupKey(db,key);
     if (val == NULL)
+    {
+        /// 搜不到key的次数
         server.stat_keyspace_misses++;
+    }
     else
+    {
+        /// 命中key的次数
         server.stat_keyspace_hits++;
+    }
     return val;
 }
 
+/// 在db中寻找key对应的redis obj用于写
 robj *lookupKeyWrite(redisDb *db, robj *key) {
     expireIfNeeded(db,key);
     return lookupKey(db,key);
 }
 
+
+/// 在c->db中寻找key对应的redis obj,如果没有就返回客户端reply消息
 robj *lookupKeyReadOrReply(redisClient *c, robj *key, robj *reply) {
     robj *o = lookupKeyRead(c->db, key);
     if (!o) addReply(c,reply);
     return o;
 }
 
+/// 在c->db中寻找key对应的redis obj,如果没有就返回客户端reply消息
 robj *lookupKeyWriteOrReply(redisClient *c, robj *key, robj *reply) {
     robj *o = lookupKeyWrite(c->db, key);
     if (!o) addReply(c,reply);
@@ -90,13 +103,22 @@ robj *lookupKeyWriteOrReply(redisClient *c, robj *key, robj *reply) {
  * counter of the value if needed.
  *
  * The program is aborted if the key already exists. */
+/// 在db中新增key val
 void dbAdd(redisDb *db, robj *key, robj *val) {
     sds copy = sdsdup(key->ptr);
     int retval = dictAdd(db->dict, copy, val);
 
     redisAssertWithInfo(NULL,key,retval == REDIS_OK);
-    if (val->type == REDIS_LIST) signalListAsReady(db, key);
-    if (server.cluster_enabled) slotToKeyAdd(key);
+    if (val->type == REDIS_LIST) 
+    {
+        /// 如果有blocking pop操作,这里可以通知到并返回
+        signalListAsReady(db, key);
+    }
+
+    if (server.cluster_enabled)     
+    {
+        slotToKeyAdd(key);
+    }
  }
 
 /* Overwrite an existing key with a new value. Incrementing the reference
@@ -104,6 +126,7 @@ void dbAdd(redisDb *db, robj *key, robj *val) {
  * This function does not modify the expire time of the existing key.
  *
  * The program is aborted if the key was not already present. */
+/// 将db的key的旧值替换为新值val
 void dbOverwrite(redisDb *db, robj *key, robj *val) {
     dictEntry *de = dictFind(db->dict,key->ptr);
 
@@ -117,6 +140,7 @@ void dbOverwrite(redisDb *db, robj *key, robj *val) {
  * 1) The ref count of the value object is incremented.
  * 2) clients WATCHing for the destination key notified.
  * 3) The expire time of the key is reset (the key is made persistent). */
+/// 将db的key设置为val(如果key存在,将旧值替换为val,如果key不存在,将key val插入)
 void setKey(redisDb *db, robj *key, robj *val) {
     if (lookupKeyWrite(db,key) == NULL) {
         dbAdd(db,key,val);
@@ -124,10 +148,12 @@ void setKey(redisDb *db, robj *key, robj *val) {
         dbOverwrite(db,key,val);
     }
     incrRefCount(val);
+    /// key的过期时间清空
     removeExpire(db,key);
     signalModifiedKey(db,key);
 }
 
+/// 返回db中是否可以找到key
 int dbExists(redisDb *db, robj *key) {
     return dictFind(db->dict,key->ptr) != NULL;
 }
@@ -136,6 +162,7 @@ int dbExists(redisDb *db, robj *key) {
  * If there are no keys, NULL is returned.
  *
  * The function makes sure to return keys not already expired. */
+/// 从db中返回一个随机的key
 robj *dbRandomKey(redisDb *db) {
     dictEntry *de;
 
@@ -144,13 +171,18 @@ robj *dbRandomKey(redisDb *db) {
         robj *keyobj;
 
         de = dictGetRandomKey(db->dict);
-        if (de == NULL) return NULL;
+        if (de == NULL)  /// 会返回NULL是因为db为空
+        {
+            redisAssert(dictSize(db->dict) == 0);
+            return NULL;
+        }
 
         key = dictGetKey(de);
         keyobj = createStringObject(key,sdslen(key));
         if (dictFind(db->expires,key)) {
             if (expireIfNeeded(db,keyobj)) {
                 decrRefCount(keyobj);
+                /// 不能是要过期的key
                 continue; /* search for another key. This expired. */
             }
         }
@@ -159,14 +191,26 @@ robj *dbRandomKey(redisDb *db) {
 }
 
 /* Delete a key, value, and associated expiration entry if any, from the DB */
+/// 从db中删除key
 int dbDelete(redisDb *db, robj *key) {
     /* Deleting an entry from the expires dict will not free the sds of
      * the key, because it is shared with the main dictionary. */
-    if (dictSize(db->expires) > 0) dictDelete(db->expires,key->ptr);
+    if (dictSize(db->expires) > 0) 
+    {
+        /// 从有过期时间的key中删除这个key
+        dictDelete(db->expires,key->ptr);
+    }
+
     if (dictDelete(db->dict,key->ptr) == DICT_OK) {
-        if (server.cluster_enabled) slotToKeyDel(key);
+        if (server.cluster_enabled) 
+        {
+            slotToKeyDel(key);
+        }
+
         return 1;
-    } else {
+    } 
+    else 
+    {
         return 0;
     }
 }
@@ -198,6 +242,7 @@ int dbDelete(redisDb *db, robj *key) {
  * At this point the caller is ready to modify the object, for example
  * using an sdscat() call to append some data, or anything else.
  */
+/// 将db中的key的旧值o重新复制一份,不与其他地方共享
 robj *dbUnshareStringValue(redisDb *db, robj *key, robj *o) {
     redisAssert(o->type == REDIS_STRING);
     if (o->refcount != 1 || o->encoding != REDIS_ENCODING_RAW) {
@@ -209,6 +254,7 @@ robj *dbUnshareStringValue(redisDb *db, robj *key, robj *o) {
     return o;
 }
 
+/// 将redis server所有的db删除,并执行callback操作,返回删除的key数目
 long long emptyDb(void(callback)(void*)) {
     int j;
     long long removed = 0;
@@ -222,6 +268,7 @@ long long emptyDb(void(callback)(void*)) {
     return removed;
 }
 
+/// 将client的db选择为第id个
 int selectDb(redisClient *c, int id) {
     if (id < 0 || id >= server.dbnum)
         return REDIS_ERR;
@@ -238,10 +285,12 @@ int selectDb(redisClient *c, int id) {
  * Every time a DB is flushed the function signalFlushDb() is called.
  *----------------------------------------------------------------------------*/
 
+/// db的key发生了变化,进行对应操作
 void signalModifiedKey(redisDb *db, robj *key) {
     touchWatchedKey(db,key);
 }
 
+/// db被清空了,进行对应操作
 void signalFlushedDb(int dbid) {
     touchWatchedKeysOnFlush(dbid);
 }
