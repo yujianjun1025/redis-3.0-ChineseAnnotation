@@ -1873,7 +1873,9 @@ int zuiNext(zsetopsrc *op, zsetopval *val) {
     return 1;
 }
 
-/// ????????????
+/// zuiNext这个函数会将value写入zsetopval val
+
+/// zuiXXXXFromValue会吧val中存放的各种val用XXXX格式返回
 int zuiLongLongFromValue(zsetopval *val) {
     if (!(val->flags & OPVAL_DIRTY_LL)) {
         val->flags |= OPVAL_DIRTY_LL;  /// 将ll标志为脏,因为可能会在其他地方被修改
@@ -1899,9 +1901,11 @@ int zuiLongLongFromValue(zsetopval *val) {
     return val->flags & OPVAL_VALID_LL;
 }
 
+/// 根据val中的string或者long long val,生成redis string obj存入ele中并返回
 robj *zuiObjectFromValue(zsetopval *val) {
     if (val->ele == NULL) {
         if (val->estr != NULL) {
+            /// ele保存的是redis string obj
             val->ele = createStringObject((char*)val->estr,val->elen);
         } else {
             val->ele = createStringObjectFromLongLong(val->ell);
@@ -1933,6 +1937,7 @@ int zuiBufferFromValue(zsetopval *val) {
 
 /* Find value pointed to by val in the source pointer to by op. When found,
  * return 1 and store its score in target. Return 0 otherwise. */
+/// 在op(set/sort set)中寻找val,将score写入并返回是否找到
 int zuiFind(zsetopsrc *op, zsetopval *val, double *score) {
     if (op->subject == NULL)
         return 0;
@@ -1986,6 +1991,7 @@ int zuiFind(zsetopsrc *op, zsetopval *val, double *score) {
     }
 }
 
+/// 返回s1 s2中元素个数的差
 int zuiCompareByCardinality(const void *s1, const void *s2) {
     return zuiLength((zsetopsrc*)s1) - zuiLength((zsetopsrc*)s2);
 }
@@ -1995,6 +2001,7 @@ int zuiCompareByCardinality(const void *s1, const void *s2) {
 #define REDIS_AGGR_MAX 3
 #define zunionInterDictValue(_e) (dictGetVal(_e) == NULL ? 1.0 : *(double*)dictGetVal(_e))
 
+/// 根据aggregate,将val与target进行求和/比大/比小操作
 inline static void zunionInterAggregate(double *target, double val, int aggregate) {
     if (aggregate == REDIS_AGGR_SUM) {
         *target = *target + val;
@@ -2012,6 +2019,8 @@ inline static void zunionInterAggregate(double *target, double val, int aggregat
     }
 }
 
+/// ZUNIONSTORE destination numkeys key [key ...] [WEIGHTS weight] [AGGREGATE SUM|MIN|MAX]
+/// 将几个set中的数据成员根据op进行操作(交集/并集)并将结果写入dstkey中
 void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
     int i, j;
     long setnum;
@@ -2026,9 +2035,11 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
     int touched = 0;
 
     /* expect setnum input keys to be given */
+    /// numkeys参数非法
     if ((getLongFromObjectOrReply(c, c->argv[2], &setnum, NULL) != REDIS_OK))
         return;
 
+    /// 两个set以上才能union
     if (setnum < 1) {
         addReplyError(c,
             "at least 1 input key is needed for ZUNIONSTORE/ZINTERSTORE");
@@ -2043,9 +2054,11 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
 
     /* read keys to be used for input */
     src = zcalloc(sizeof(zsetopsrc) * setnum);
+    /// 把set读进src中
     for (i = 0, j = 3; i < setnum; i++, j++) {
         robj *obj = lookupKeyWrite(c->db,c->argv[j]);
         if (obj != NULL) {
+            /// 只能是SET 和 SORT SET
             if (obj->type != REDIS_ZSET && obj->type != REDIS_SET) {
                 zfree(src);
                 addReply(c,shared.wrongtypeerr);
@@ -2064,10 +2077,12 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
     }
 
     /* parse optional extra arguments */
+    /// 解析额外参数,weight 和 aggregate等
     if (j < c->argc) {
         int remaining = c->argc - j;
 
         while (remaining) {
+            /// 解析每个set score的权重
             if (remaining >= (setnum + 1) && !strcasecmp(c->argv[j]->ptr,"weights")) {
                 j++; remaining--;
                 for (i = 0; i < setnum; i++, j++, remaining--) {
@@ -2078,7 +2093,9 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
                         return;
                     }
                 }
-            } else if (remaining >= 2 && !strcasecmp(c->argv[j]->ptr,"aggregate")) {
+            } 
+            /// 解析aggregate
+            else if (remaining >= 2 && !strcasecmp(c->argv[j]->ptr,"aggregate")) {
                 j++; remaining--;
                 if (!strcasecmp(c->argv[j]->ptr,"sum")) {
                     aggregate = REDIS_AGGR_SUM;
@@ -2102,18 +2119,20 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
 
     /* sort sets from the smallest to largest, this will improve our
      * algorithm's performance */
+    /// 把set按照集合元素个数从少到多排序
     qsort(src,setnum,sizeof(zsetopsrc),zuiCompareByCardinality);
 
     dstobj = createZsetObject();
     dstzset = dstobj->ptr;
     memset(&zval, 0, sizeof(zval));
 
-    if (op == REDIS_OP_INTER) {
+    if (op == REDIS_OP_INTER) { /// 求交集
         /* Skip everything if the smallest input is empty. */
         if (zuiLength(&src[0]) > 0) {
             /* Precondition: as src[0] is non-empty and the inputs are ordered
              * by size, all src[i > 0] are non-empty too. */
             zuiInitIterator(&src[0]);
+            /// 将其他key中的每一个元素一次与key[0]的每一个元素比对
             while (zuiNext(&src[0],&zval)) {
                 double score, value;
 
@@ -2123,11 +2142,12 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
                 for (j = 1; j < setnum; j++) {
                     /* It is not safe to access the zset we are
                      * iterating, so explicitly check for equal object. */
+                    /// 同一个key
                     if (src[j].subject == src[0].subject) {
                         value = zval.score*src[j].weight;
                         zunionInterAggregate(&score,value,aggregate);
-                    } else if (zuiFind(&src[j],&zval,&value)) {
-                        value *= src[j].weight;
+                    } else if (zuiFind(&src[j],&zval,&value)) { /// 其他key中也可以找到这个value,score存在value中
+                        value *= src[j].weight; /// value存的score进行权重缩放
                         zunionInterAggregate(&score,value,aggregate);
                     } else {
                         break;
@@ -2135,6 +2155,7 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
                 }
 
                 /* Only continue when present in every input. */
+                /// 所有key中都能找到这个value,是交集的成员
                 if (j == setnum) {
                     tmp = zuiObjectFromValue(&zval);
                     znode = zslInsert(dstzset->zsl,score,tmp);
@@ -2150,7 +2171,8 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
             }
             zuiClearIterator(&src[0]);
         }
-    } else if (op == REDIS_OP_UNION) {
+    } else if (op == REDIS_OP_UNION) { /// 并集
+        /// 从key[0]开始至key[j]依次遍历所有的key,将所有的member(如果dict中不存在)加入到dict中
         dict *accumulator = dictCreate(&setDictType,NULL);
         dictIterator *di;
         dictEntry *de;
@@ -2176,6 +2198,7 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
                 /* Search for this element in the accumulating dictionary. */
                 de = dictFind(accumulator,zuiObjectFromValue(&zval));
                 /* If we don't have it, we need to create a new entry. */
+                /// 如果没有在结果集中,加入到结果集中
                 if (de == NULL) {
                     tmp = zuiObjectFromValue(&zval);
                     /* Remember the longest single element encountered,
@@ -2196,6 +2219,7 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
                      * Here we access directly the dictEntry double
                      * value inside the union as it is a big speedup
                      * compared to using the getDouble/setDouble API. */
+                    /// 进行score的处理
                     zunionInterAggregate(&de->v.d,score,aggregate);
                 }
             }
@@ -2226,6 +2250,7 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
         redisPanic("Unknown operator");
     }
 
+    /// 如果dstkey存在,删除
     if (dbDelete(c->db,dstkey)) {
         signalModifiedKey(c->db,dstkey);
         touched = 1;
@@ -2253,14 +2278,18 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
     zfree(src);
 }
 
+/// ZUNIONSTORE destination numkeys key [key ...] [WEIGHTS weight] [AGGREGATE SUM|MIN|MAX]
 void zunionstoreCommand(redisClient *c) {
     zunionInterGenericCommand(c,c->argv[1], REDIS_OP_UNION);
 }
 
+/// ZINTERSTORE destination numkeys key [key ...] [WEIGHTS weight] [AGGREGATE SUM|MIN|MAX]
 void zinterstoreCommand(redisClient *c) {
     zunionInterGenericCommand(c,c->argv[1], REDIS_OP_INTER);
 }
 
+/// ZRANGE key start stop [WITHSCORES]
+/// 返回SORT SET中某一个范围内的元素,reverse表示是否逆序输出
 void zrangeGenericCommand(redisClient *c, int reverse) {
     robj *key = c->argv[1];
     robj *zobj;
@@ -2372,6 +2401,7 @@ void zrevrangeCommand(redisClient *c) {
 }
 
 /* This command implements ZRANGEBYSCORE, ZREVRANGEBYSCORE. */
+/// ZRANGEBYSCORE key min max [WITHSCORES] [LIMIT offset count]
 void genericZrangebyscoreCommand(redisClient *c, int reverse) {
     zrangespec range;
     robj *key = c->argv[1];
@@ -2453,6 +2483,7 @@ void genericZrangebyscoreCommand(redisClient *c, int reverse) {
 
         /* If there is an offset, just traverse the number of elements without
          * checking the score because that is done in the next loop. */
+        /// 跳过offset前的节点
         while (eptr && offset--) {
             if (reverse) {
                 zzlPrev(zl,&eptr,&sptr);
@@ -2461,10 +2492,12 @@ void genericZrangebyscoreCommand(redisClient *c, int reverse) {
             }
         }
 
+        /// 最多limit个返回节点
         while (eptr && limit--) {
             score = zzlGetScore(sptr);
 
             /* Abort when the node is no longer in range. */
+            /// score不在我们给定的范围里
             if (reverse) {
                 if (!zslValueGteMin(score,&range)) break;
             } else {
@@ -2558,14 +2591,18 @@ void genericZrangebyscoreCommand(redisClient *c, int reverse) {
     setDeferredMultiBulkLength(c, replylen, rangelen);
 }
 
+/// ZRANGEBYSCORE key max min [WITHSCORES] [LIMIT offset count]
 void zrangebyscoreCommand(redisClient *c) {
     genericZrangebyscoreCommand(c,0);
 }
 
+/// ZREVRANGEBYSCORE key max min [WITHSCORES] [LIMIT offset count]
 void zrevrangebyscoreCommand(redisClient *c) {
     genericZrangebyscoreCommand(c,1);
 }
 
+/// ZCOUNT key min max
+/// 返回score在min max范围里的个数
 void zcountCommand(redisClient *c) {
     robj *key = c->argv[1];
     robj *zobj;
@@ -2620,19 +2657,23 @@ void zcountCommand(redisClient *c) {
         unsigned long rank;
 
         /* Find first element in range */
+        /// 找到第一个在range里的元素
         zn = zslFirstInRange(zsl, &range);
 
         /* Use rank of first element, if any, to determine preliminary count */
         if (zn != NULL) {
+            /// 得到第一个在range里元素的排序
             rank = zslGetRank(zsl, zn->score, zn->obj);
             count = (zsl->length - (rank - 1));
 
             /* Find last element in range */
+            /// 找到最后一个在range里的元素
             zn = zslLastInRange(zsl, &range);
 
             /* Use rank of last element, if any, to determine the actual count */
             if (zn != NULL) {
                 rank = zslGetRank(zsl, zn->score, zn->obj);
+                /// count就是最后一个节点和第一个节点rank的差
                 count -= (zsl->length - rank);
             }
         }
@@ -2643,6 +2684,8 @@ void zcountCommand(redisClient *c) {
     addReplyLongLong(c, count);
 }
 
+/// ZLEXCOUNT key min max
+/// 类似zcount
 void zlexcountCommand(redisClient *c) {
     robj *key = c->argv[1];
     robj *zobj;
@@ -2723,6 +2766,8 @@ void zlexcountCommand(redisClient *c) {
 }
 
 /* This command implements ZRANGEBYLEX, ZREVRANGEBYLEX. */
+/// ZRANGEBYLEX key min max [LIMIT offset count]
+/// 类似zrangebyscore
 void genericZrangebylexCommand(redisClient *c, int reverse) {
     zlexrangespec range;
     robj *key = c->argv[1];
@@ -2907,6 +2952,7 @@ void zrevrangebylexCommand(redisClient *c) {
     genericZrangebylexCommand(c,1);
 }
 
+/// ZCARD key
 void zcardCommand(redisClient *c) {
     robj *key = c->argv[1];
     robj *zobj;
@@ -2917,6 +2963,7 @@ void zcardCommand(redisClient *c) {
     addReplyLongLong(c,zsetLength(zobj));
 }
 
+/// ZSCORE key member
 void zscoreCommand(redisClient *c) {
     robj *key = c->argv[1];
     robj *zobj;
@@ -2947,6 +2994,7 @@ void zscoreCommand(redisClient *c) {
     }
 }
 
+/// ZRANK key member
 void zrankGenericCommand(redisClient *c, int reverse) {
     robj *key = c->argv[1];
     robj *ele = c->argv[2];
@@ -2971,6 +3019,7 @@ void zrankGenericCommand(redisClient *c, int reverse) {
 
         rank = 1;
         while(eptr != NULL) {
+            /// 从前到后遍历,再比对
             if (ziplistCompare(eptr,ele->ptr,sdslen(ele->ptr)))
                 break;
             rank++;
@@ -3017,6 +3066,7 @@ void zrevrankCommand(redisClient *c) {
     zrankGenericCommand(c, 1);
 }
 
+/// ???? 还没看
 void zscanCommand(redisClient *c) {
     robj *o;
     unsigned long cursor;
