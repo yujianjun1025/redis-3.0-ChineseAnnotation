@@ -916,13 +916,13 @@ typedef void redisCommandProc(redisClient *c);
 typedef int *redisGetKeysProc(struct redisCommand *cmd, robj **argv, int argc, int *numkeys);
 struct redisCommand {
     char *name;
-    redisCommandProc *proc;
+    redisCommandProc *proc; /// 执行cmd的函数
     int arity;
     char *sflags; /* Flags as string representation, one char per flag. */
     int flags;    /* The actual flags, obtained from the 'sflags' field. */
     /* Use a function to determine keys arguments in a command line.
      * Used for Redis Cluster redirect. */
-    redisGetKeysProc *getkeys_proc;
+    redisGetKeysProc *getkeys_proc; /// 负责从cmd中把redis key提取出来的函数
     /* What keys should be loaded in background when calling this command? */
     int firstkey; /* The first argument that's a key (0 = no keys) */
     int lastkey;  /* The last argument that's a key */

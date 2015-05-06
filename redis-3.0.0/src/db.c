@@ -804,6 +804,8 @@ void renamenxCommand(redisClient *c) {
     renameGenericCommand(c,1);
 }
 
+/// MOVE key db
+/// 将key从原来的db移至新的db
 void moveCommand(redisClient *c) {
     robj *o;
     redisDb *src, *dst;
@@ -861,6 +863,7 @@ void moveCommand(redisClient *c) {
  * Expires API
  *----------------------------------------------------------------------------*/
 
+/// 将key从expire key数据库中删除
 int removeExpire(redisDb *db, robj *key) {
     /* An expire may only be removed if there is a corresponding entry in the
      * main dict. Otherwise, the key will never be freed. */
@@ -868,28 +871,34 @@ int removeExpire(redisDb *db, robj *key) {
     return dictDelete(db->expires,key->ptr) == DICT_OK;
 }
 
+/// 将db的key设置为when时间过期
 void setExpire(redisDb *db, robj *key, long long when) {
     dictEntry *kde, *de;
 
     /* Reuse the sds from the main dict in the expire dict */
     kde = dictFind(db->dict,key->ptr);
     redisAssertWithInfo(NULL,key,kde != NULL);
+    /// 替换原来的过期时间
     de = dictReplaceRaw(db->expires,dictGetKey(kde));
+    /// 设置过期时间
     dictSetSignedIntegerVal(de,when);
 }
 
 /* Return the expire time of the specified key, or -1 if no expire
  * is associated with this key (i.e. the key is non volatile) */
+/// 返回db的key的过期时间
 long long getExpire(redisDb *db, robj *key) {
     dictEntry *de;
 
     /* No expire? return ASAP */
+    /// 没有这个会过期的key, 返回-1
     if (dictSize(db->expires) == 0 ||
        (de = dictFind(db->expires,key->ptr)) == NULL) return -1;
 
     /* The entry was found in the expire dict, this means it should also
      * be present in the main dict (safety check). */
     redisAssertWithInfo(NULL,key,dictFind(db->dict,key->ptr) != NULL);
+    /// 返回过期时间
     return dictGetSignedIntegerVal(de);
 }
 
@@ -901,6 +910,7 @@ long long getExpire(redisDb *db, robj *key) {
  * AOF and the master->slave link guarantee operation ordering, everything
  * will be consistent even if we allow write operations against expiring
  * keys. */
+/// 将db的key 被del(因为时间到了被del)消息传递到aof和从redis中
 void propagateExpire(redisDb *db, robj *key) {
     robj *argv[2];
 
@@ -910,17 +920,20 @@ void propagateExpire(redisDb *db, robj *key) {
     incrRefCount(argv[1]);
 
     if (server.aof_state != REDIS_AOF_OFF)
+    {
         feedAppendOnlyFile(server.delCommand,db->id,argv,2);
+    }
     replicationFeedSlaves(server.slaves,db->id,argv,2);
 
     decrRefCount(argv[0]);
     decrRefCount(argv[1]);
 }
-
+/// 将db的key过期时间进行判断,如果过期,将key删除并进行其他操作
 int expireIfNeeded(redisDb *db, robj *key) {
     mstime_t when = getExpire(db,key);
     mstime_t now;
 
+    /// -1表示这个key永远会存在
     if (when < 0) return 0; /* No expire for this key */
 
     /* Don't expire anything while loading. It will be done later. */
@@ -940,12 +953,17 @@ int expireIfNeeded(redisDb *db, robj *key) {
      * Still we try to return the right information to the caller,
      * that is, 0 if we think the key should be still valid, 1 if
      * we think the key is expired at this time. */
-    if (server.masterhost != NULL) return now > when;
+    /// 这是一个slave,expire权利在master手中
+    if (server.masterhost != NULL) 
+    {
+        return now > when;
+    }
 
     /* Return when this key has not expired */
     if (now <= when) return 0;
 
     /* Delete the key */
+    /// 过期了,将key删除且传递到aof和从库中
     server.stat_expiredkeys++;
     propagateExpire(db,key);
     notifyKeyspaceEvent(REDIS_NOTIFY_EXPIRED,
@@ -964,6 +982,7 @@ int expireIfNeeded(redisDb *db, robj *key) {
  *
  * unit is either UNIT_SECONDS or UNIT_MILLISECONDS, and is only used for
  * the argv[2] parameter. The basetime is always specified in milliseconds. */
+/// EXPIRE/EXPIREAT命令的实现
 void expireGenericCommand(redisClient *c, long long basetime, int unit) {
     robj *key = c->argv[1], *param = c->argv[2];
     long long when; /* unix time in milliseconds when the key will expire. */
@@ -971,6 +990,7 @@ void expireGenericCommand(redisClient *c, long long basetime, int unit) {
     if (getLongLongFromObjectOrReply(c, param, &when, NULL) != REDIS_OK)
         return;
 
+    /// 总是以毫秒为单位
     if (unit == UNIT_SECONDS) when *= 1000;
     when += basetime;
 
@@ -986,12 +1006,15 @@ void expireGenericCommand(redisClient *c, long long basetime, int unit) {
      *
      * Instead we take the other branch of the IF statement setting an expire
      * (possibly in the past) and wait for an explicit DEL from the master. */
+    /// 设置的时间为过去的时间,key直接过期
     if (when <= mstime() && !server.loading && !server.masterhost) {
         robj *aux;
 
+        /// 将key删除
         redisAssertWithInfo(c,key,dbDelete(c->db,key));
         server.dirty++;
 
+        /// 这里为什么不使用propagateExpire来传递过期key?????
         /* Replicate/AOF this as an explicit DEL. */
         aux = createStringObject("DEL",3);
         rewriteClientCommandVector(c,2,aux,key);
@@ -1000,7 +1023,7 @@ void expireGenericCommand(redisClient *c, long long basetime, int unit) {
         notifyKeyspaceEvent(REDIS_NOTIFY_GENERIC,"del",key,c->db->id);
         addReply(c, shared.cone);
         return;
-    } else {
+    } else { /// 为key设置过期时间
         setExpire(c->db,key,when);
         addReply(c,shared.cone);
         signalModifiedKey(c->db,key);
@@ -1026,6 +1049,7 @@ void pexpireatCommand(redisClient *c) {
     expireGenericCommand(c,0,UNIT_MILLISECONDS);
 }
 
+/// TTL key
 void ttlGenericCommand(redisClient *c, int output_ms) {
     long long expire, ttl = -1;
 
@@ -1048,14 +1072,18 @@ void ttlGenericCommand(redisClient *c, int output_ms) {
     }
 }
 
+/// TTL key 返回秒
 void ttlCommand(redisClient *c) {
     ttlGenericCommand(c, 0);
 }
 
+/// PTTL key 返回毫秒
 void pttlCommand(redisClient *c) {
     ttlGenericCommand(c, 1);
 }
 
+/// PERSIST key
+/// 将key从过期列表中移除
 void persistCommand(redisClient *c) {
     dictEntry *de;
 
@@ -1063,6 +1091,7 @@ void persistCommand(redisClient *c) {
     if (de == NULL) {
         addReply(c,shared.czero);
     } else {
+        /// 将key从expire表中删除,这个key不再会过期,'坚持'下来了
         if (removeExpire(c->db,c->argv[1])) {
             addReply(c,shared.cone);
             server.dirty++;
@@ -1078,14 +1107,17 @@ void persistCommand(redisClient *c) {
 
 /* The base case is to use the keys position as given in the command table
  * (firstkey, lastkey, step). */
+/// 从cmd中得到key的个数,并将key个数写入numkeys中,返回key的index数组
 int *getKeysUsingCommandTable(struct redisCommand *cmd,robj **argv, int argc, int *numkeys) {
     int j, i = 0, last, *keys;
     REDIS_NOTUSED(argv);
 
+    /// 没有一个key
     if (cmd->firstkey == 0) {
         *numkeys = 0;
         return NULL;
     }
+
     last = cmd->lastkey;
     if (last < 0) last = argc+last;
     keys = zmalloc(sizeof(int)*((last - cmd->firstkey)+1));
@@ -1108,6 +1140,7 @@ int *getKeysUsingCommandTable(struct redisCommand *cmd,robj **argv, int argc, in
  *
  * This function uses the command table if a command-specific helper function
  * is not required, otherwise it calls the command-specific function. */
+///从cmd中得到key
 int *getKeysFromCommand(struct redisCommand *cmd, robj **argv, int argc, int *numkeys) {
     if (cmd->getkeys_proc) {
         return cmd->getkeys_proc(cmd,argv,argc,numkeys);
@@ -1117,6 +1150,7 @@ int *getKeysFromCommand(struct redisCommand *cmd, robj **argv, int argc, int *nu
 }
 
 /* Free the result of getKeysFromCommand. */
+/// 将getkey返回的数组清空
 void getKeysFreeResult(int *result) {
     zfree(result);
 }
@@ -1124,6 +1158,8 @@ void getKeysFreeResult(int *result) {
 /* Helper function to extract keys from following commands:
  * ZUNIONSTORE <destkey> <num-keys> <key> <key> ... <key> <options>
  * ZINTERSTORE <destkey> <num-keys> <key> <key> ... <key> <options> */
+///     0          1          2       3     4   ...   n      n + 1
+/// 返回key的个数和结果集,结果集为int数组,内容为[4,5,...n,1] 对应上面的位置
 int *zunionInterGetKeys(struct redisCommand *cmd, robj **argv, int argc, int *numkeys) {
     int i, num, *keys;
     REDIS_NOTUSED(cmd);
@@ -1153,6 +1189,7 @@ int *zunionInterGetKeys(struct redisCommand *cmd, robj **argv, int argc, int *nu
 /* Helper function to extract keys from the following commands:
  * EVAL <script> <num-keys> <key> <key> ... <key> [more stuff]
  * EVALSHA <script> <num-keys> <key> <key> ... <key> [more stuff] */
+/// 返回eval命令中key的个数和index
 int *evalGetKeys(struct redisCommand *cmd, robj **argv, int argc, int *numkeys) {
     int i, num, *keys;
     REDIS_NOTUSED(cmd);
@@ -1174,6 +1211,10 @@ int *evalGetKeys(struct redisCommand *cmd, robj **argv, int argc, int *numkeys) 
     return keys;
 }
 
+///// ??????????????????????????????????/
+///// ??????????????????????????????????/
+///// ??????????????????????????????????/
+///下面的代码还没读,不知道是干啥的,那些命令不熟
 /* Helper function to extract keys from the SORT command.
  *
  * SORT <sort-key> ... STORE <store-key> ...
