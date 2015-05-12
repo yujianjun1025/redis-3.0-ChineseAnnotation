@@ -89,6 +89,7 @@ void *bioProcessBackgroundJobs(void *arg);
 #define REDIS_THREAD_STACK_SIZE (1024*1024*4)
 
 /* Initialize the background system, spawning the thread. */
+/// 初始化bio线程,设置线程栈size,初始化锁,条件变量以及其他参数
 void bioInit(void) {
     pthread_attr_t attr;
     pthread_t thread;
@@ -123,6 +124,7 @@ void bioInit(void) {
     }
 }
 
+/// 创建type类型的bio Job
 void bioCreateBackgroundJob(int type, void *arg1, void *arg2, void *arg3) {
     struct bio_job *job = zmalloc(sizeof(*job));
 
@@ -132,11 +134,14 @@ void bioCreateBackgroundJob(int type, void *arg1, void *arg2, void *arg3) {
     job->arg3 = arg3;
     pthread_mutex_lock(&bio_mutex[type]);
     listAddNodeTail(bio_jobs[type],job);
+    /// 多了一个等待处理的线程
     bio_pending[type]++;
+    /// 通知bio线程,有新的job创建了
     pthread_cond_signal(&bio_condvar[type]);
     pthread_mutex_unlock(&bio_mutex[type]);
 }
 
+/// bio job处理线程函数
 void *bioProcessBackgroundJobs(void *arg) {
     struct bio_job *job;
     unsigned long type = (unsigned long) arg;
@@ -161,6 +166,7 @@ void *bioProcessBackgroundJobs(void *arg) {
 
         /* The loop always starts with the lock hold. */
         if (listLength(bio_jobs[type]) == 0) {
+            /// 等待job
             pthread_cond_wait(&bio_condvar[type],&bio_mutex[type]);
             continue;
         }
@@ -172,6 +178,7 @@ void *bioProcessBackgroundJobs(void *arg) {
         pthread_mutex_unlock(&bio_mutex[type]);
 
         /* Process the job accordingly to its type. */
+        /// 根据类型进行处理,只有close 和 刷新write stream两种操作
         if (type == REDIS_BIO_CLOSE_FILE) {
             close((long)job->arg1);
         } else if (type == REDIS_BIO_AOF_FSYNC) {
@@ -190,6 +197,7 @@ void *bioProcessBackgroundJobs(void *arg) {
 }
 
 /* Return the number of pending jobs of the specified type. */
+/// 返回type类型还未处理的job数
 unsigned long long bioPendingJobsOfType(int type) {
     unsigned long long val;
     pthread_mutex_lock(&bio_mutex[type]);
@@ -202,6 +210,7 @@ unsigned long long bioPendingJobsOfType(int type) {
  * used only when it's critical to stop the threads for some reason.
  * Currently Redis does this only on crash (for instance on SIGSEGV) in order
  * to perform a fast memory check without other threads messing with memory. */
+/// kill所有bio线程
 void bioKillThreads(void) {
     int err, j;
 
