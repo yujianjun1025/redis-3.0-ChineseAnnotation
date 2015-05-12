@@ -295,6 +295,7 @@ int startAppendOnly(void) {
  * However if force is set to 1 we'll write regardless of the background
  * fsync. */
 #define AOF_WRITE_LOG_ERROR_RATE 30 /* Seconds between errors logging. */
+/// 将aof buf中剩余的内容写入aof文件,并flush系统的write stream cache,force 表示牵制执行
 void flushAppendOnlyFile(int force) {
     ssize_t nwritten;
     int sync_in_progress = 0;
@@ -338,6 +339,7 @@ void flushAppendOnlyFile(int force) {
      * or alike */
 
     latencyStartMonitor(latency);
+    /// 将aof buf内容写入aof文件
     nwritten = write(server.aof_fd,server.aof_buf,sdslen(server.aof_buf));
     latencyEndMonitor(latency);
     /* We want to capture different events for delayed writes:
@@ -535,12 +537,14 @@ sds catAppendOnlyExpireAtCommand(sds buf, struct redisCommand *cmd, robj *key, r
     return buf;
 }
 
+/// 将cmd写入redis id号数据库中,参数个数argc个,参数保存在argv中
 void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int argc) {
     sds buf = sdsempty();
     robj *tmpargv[3];
 
     /* The DB this command was targeting is not the same as the last command
      * we appended. To issue a SELECT command is needed. */
+    /// 选择正确的DB
     if (dictid != server.aof_selected_db) {
         char seldb[64];
 
@@ -550,6 +554,7 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
         server.aof_selected_db = dictid;
     }
 
+    /// expire 这种类型的命令需要特殊处理
     if (cmd->proc == expireCommand || cmd->proc == pexpireCommand ||
         cmd->proc == expireatCommand) {
         /* Translate EXPIRE/PEXPIRE/EXPIREAT into PEXPIREAT */
@@ -562,7 +567,7 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
         buf = catAppendOnlyGenericCommand(buf,3,tmpargv);
         decrRefCount(tmpargv[0]);
         buf = catAppendOnlyExpireAtCommand(buf,cmd,argv[1],argv[2]);
-    } else {
+    } else { /// 其他类型的命令只需要按照redis协议写入aof文件即可
         /* All the other commands don't need translation or need the
          * same translation already operated in the command vector
          * for the replication itself. */
@@ -573,14 +578,20 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
      * of re-entering the event loop, so before the client will get a
      * positive reply about the operation performed. */
     if (server.aof_state == REDIS_AOF_ON)
+    {
+        /// 往aof buf 后面添加数据
         server.aof_buf = sdscatlen(server.aof_buf,buf,sdslen(buf));
+    }
 
     /* If a background append only file rewriting is in progress we want to
      * accumulate the differences between the child DB and the current one
      * in a buffer, so that when the child process will do its work we
      * can append the differences to the new append only file. */
     if (server.aof_child_pid != -1)
+    {
+        /// 网aof rewrite buffer中添加buf
         aofRewriteBufferAppend((unsigned char*)buf,sdslen(buf));
+    }
 
     sdsfree(buf);
 }
