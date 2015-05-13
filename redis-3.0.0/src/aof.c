@@ -602,11 +602,12 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
 
 /* In Redis commands are always executed in the context of a client, so in
  * order to load the append only file we need to create a fake client. */
+/// 创建一个fake(假的)客户端
 struct redisClient *createFakeClient(void) {
     struct redisClient *c = zmalloc(sizeof(*c));
 
     selectDb(c,0);
-    c->fd = -1;
+    c->fd = -1; /// 没有描述符,表明为fakeclient
     c->name = NULL;
     c->querybuf = sdsempty();
     c->querybuf_peak = 0;
@@ -629,6 +630,7 @@ struct redisClient *createFakeClient(void) {
     return c;
 }
 
+/// 释放fakeclient 的参数
 void freeFakeClientArgv(struct redisClient *c) {
     int j;
 
@@ -637,6 +639,7 @@ void freeFakeClientArgv(struct redisClient *c) {
     zfree(c->argv);
 }
 
+/// 释放fakeclient
 void freeFakeClient(struct redisClient *c) {
     sdsfree(c->querybuf);
     listRelease(c->reply);
@@ -656,6 +659,7 @@ int loadAppendOnlyFile(char *filename) {
     long loops = 0;
     off_t valid_up_to = 0; /* Offset of the latest well-formed command loaded. */
 
+    /// 文件存在,但大小为0
     if (fp && redis_fstat(fileno(fp),&sb) != -1 && sb.st_size == 0) {
         server.aof_current_size = 0;
         fclose(fp);
@@ -683,6 +687,7 @@ int loadAppendOnlyFile(char *filename) {
         struct redisCommand *cmd;
 
         /* Serve the clients from time to time */
+        /// 不能在load aof时阻塞,要保持对客户端事件的处理
         if (!(loops++ % 1000)) {
             loadingProgress(ftello(fp));
             processEventsWhileBlocked();
@@ -694,7 +699,7 @@ int loadAppendOnlyFile(char *filename) {
             else
                 goto readerr;
         }
-        if (buf[0] != '*') goto fmterr;
+        if (buf[0] != '*') goto fmterr; /// format error
         if (buf[1] == '\0') goto readerr;
         argc = atoi(buf+1);
         if (argc < 1) goto fmterr;
@@ -704,14 +709,17 @@ int loadAppendOnlyFile(char *filename) {
         fakeClient->argv = argv;
 
         for (j = 0; j < argc; j++) {
+            /// fgets 读一行
             if (fgets(buf,sizeof(buf),fp) == NULL) {
                 fakeClient->argc = j; /* Free up to j-1. */
                 freeFakeClientArgv(fakeClient);
                 goto readerr;
             }
             if (buf[0] != '$') goto fmterr;
+            /// 读出命令/参数长度
             len = strtol(buf+1,NULL,10);
             argsds = sdsnewlen(NULL,len);
+            /// 将命令/参数读出来
             if (len && fread(argsds,len,1,fp) == 0) {
                 sdsfree(argsds);
                 fakeClient->argc = j; /* Free up to j-1. */
@@ -719,6 +727,7 @@ int loadAppendOnlyFile(char *filename) {
                 goto readerr;
             }
             argv[j] = createObject(REDIS_STRING,argsds);
+            /// 读/r/n
             if (fread(buf,2,1,fp) == 0) {
                 fakeClient->argc = j+1; /* Free up to j. */
                 freeFakeClientArgv(fakeClient);
@@ -727,6 +736,7 @@ int loadAppendOnlyFile(char *filename) {
         }
 
         /* Command lookup */
+        /// 找到redis 命令
         cmd = lookupCommand(argv[0]->ptr);
         if (!cmd) {
             redisLog(REDIS_WARNING,"Unknown command '%s' reading the append only file", (char*)argv[0]->ptr);
@@ -734,6 +744,7 @@ int loadAppendOnlyFile(char *filename) {
         }
 
         /* Run the command in the context of a fake client */
+        /// 执行命令
         cmd->proc(fakeClient);
 
         /* The fake client should not have a reply */
@@ -766,6 +777,7 @@ readerr: /* Read error. If feof(fp) is true, fall through to unexpected EOF. */
         exit(1);
     }
 
+    ///???? 研究一下truncate() fgets() ftello()这几个函数
 uxeof: /* Unexpected AOF end of file. */
     if (server.aof_load_truncated) {
         redisLog(REDIS_WARNING,"!!! Warning: short read while loading the AOF file !!!");
