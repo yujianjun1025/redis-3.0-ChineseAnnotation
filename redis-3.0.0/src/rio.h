@@ -40,6 +40,7 @@ struct _rio {
     /* Backend functions.
      * Since this functions do not tolerate short writes or reads the return
      * value is simplified to: zero on error, non zero on complete success. */
+    /// read/write/tell/flush函数
     size_t (*read)(struct _rio *, void *buf, size_t len);
     size_t (*write)(struct _rio *, const void *buf, size_t len);
     off_t (*tell)(struct _rio *);
@@ -49,6 +50,7 @@ struct _rio {
      * designed so that can be called with the current checksum, and the buf
      * and len fields pointing to the new block of data to add to the checksum
      * computation. */
+    /// 计算校验和函数
     void (*update_cksum)(struct _rio *, const void *buf, size_t len);
 
     /* The current checksum */
@@ -58,6 +60,7 @@ struct _rio {
     size_t processed_bytes;
 
     /* maximum single read or write chunk size */
+    /// 每次读写的最大块长度
     size_t max_processing_chunk;
 
     /* Backend-specific vars. */
@@ -92,8 +95,13 @@ typedef struct _rio rio;
 
 static inline size_t rioWrite(rio *r, const void *buf, size_t len) {
     while (len) {
+        /// 每次写不超过最大块的长度
         size_t bytes_to_write = (r->max_processing_chunk && r->max_processing_chunk < len) ? r->max_processing_chunk : len;
-        if (r->update_cksum) r->update_cksum(r,buf,bytes_to_write);
+        if (r->update_cksum) 
+        {
+            /// 更新校验值
+            r->update_cksum(r,buf,bytes_to_write);
+        }
         if (r->write(r,buf,bytes_to_write) == 0)
             return 0;
         buf = (char*)buf + bytes_to_write;

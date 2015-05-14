@@ -719,7 +719,7 @@ int loadAppendOnlyFile(char *filename) {
             /// 读出命令/参数长度
             len = strtol(buf+1,NULL,10);
             argsds = sdsnewlen(NULL,len);
-            /// 将命令/参数读出来
+            /// 根据len长度,将命令/参数读出来
             if (len && fread(argsds,len,1,fp) == 0) {
                 sdsfree(argsds);
                 fakeClient->argc = j; /* Free up to j-1. */
