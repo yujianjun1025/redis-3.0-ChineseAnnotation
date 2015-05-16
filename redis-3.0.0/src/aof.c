@@ -95,7 +95,8 @@ unsigned long aofRewriteBufferSize(void) {
 /* Event handler used to send data to the child process doing the AOF
  * rewrite. We send pieces of our AOF differences buffer so that the final
  * write when the child finishes the rewrite will be small. */
-/// 事件函数,用于redis server 写aof
+/// 事件函数,用于redis server 写aof diff
+/// 这里的AOF是redis-server执行AOF过程中redis-server变化的数据,暂存到
 void aofChildWriteDiffData(aeEventLoop *el, int fd, void *privdata, int mask) {
     listNode *ln;
     aofrwblock *block;
@@ -1297,15 +1298,18 @@ werr: /// 写错误处理
 /* This event handler is called when the AOF rewriting child sends us a
  * single '!' char to signal we should stop sending buffer diffs. The
  * parent sends a '!' as well to acknowledge. */
+/// AOF管道可读事件,子进程只会发给父进程!要求父进程停止发送aof diff
 void aofChildPipeReadable(aeEventLoop *el, int fd, void *privdata, int mask) {
     char byte;
     REDIS_NOTUSED(el);
     REDIS_NOTUSED(privdata);
     REDIS_NOTUSED(mask);
 
+    /// 往管道里读一个字节,发现aof子进程希望父进程停止发送diff
     if (read(fd,&byte,1) == 1 && byte == '!') {
         redisLog(REDIS_NOTICE,"AOF rewrite child asks to stop sending diffs.");
         server.aof_stop_sending_diff = 1;
+        /// 发送给子进程,确认
         if (write(server.aof_pipe_write_ack_to_child,"!",1) != 1) {
             /* If we can't send the ack, inform the user, but don't try again
              * since in the other side the children will use a timeout if the
@@ -1325,6 +1329,8 @@ void aofChildPipeReadable(aeEventLoop *el, int fd, void *privdata, int mask) {
  * and two other pipes used by the children to signal it finished with
  * the rewrite so no more data should be written, and another for the
  * parent to acknowledge it understood this new condition. */
+/// 创建AOF通信用的管道
+/// TODO:用linux eventfd进行重写
 int aofCreatePipes(void) {
     int fds[6] = {-1, -1, -1, -1, -1, -1};
     int j;
@@ -1335,8 +1341,10 @@ int aofCreatePipes(void) {
     /* Parent -> children data is non blocking. */
     if (anetNonBlock(NULL,fds[0]) != ANET_OK) goto error;
     if (anetNonBlock(NULL,fds[1]) != ANET_OK) goto error;
+    /// 创建读取子进程发送的'!'事件
     if (aeCreateFileEvent(server.el, fds[2], AE_READABLE, aofChildPipeReadable, NULL) == AE_ERR) goto error;
 
+    /// 保存了一堆管道的fd,程序可读性极低
     server.aof_pipe_write_data_to_child = fds[1];
     server.aof_pipe_read_data_from_parent = fds[0];
     server.aof_pipe_write_ack_to_parent = fds[3];
@@ -1353,6 +1361,7 @@ error:
     return REDIS_ERR;
 }
 
+/// 关闭管道
 void aofClosePipes(void) {
     aeDeleteFileEvent(server.el,server.aof_pipe_read_ack_from_child,AE_READABLE);
     aeDeleteFileEvent(server.el,server.aof_pipe_write_data_to_child,AE_WRITABLE);
@@ -1380,20 +1389,28 @@ void aofClosePipes(void) {
  *    finally will rename(2) the temp file in the actual file name.
  *    The the new file is reopened as the new append only file. Profit!
  */
+/// fork一个子进程用来重写aof文件
 int rewriteAppendOnlyFileBackground(void) {
     pid_t childpid;
     long long start;
 
+    /// 已经有AOF子进程
     if (server.aof_child_pid != -1) return REDIS_ERR;
+
     if (aofCreatePipes() != REDIS_OK) return REDIS_ERR;
     start = ustime();
+    /// child
     if ((childpid = fork()) == 0) {
         char tmpfile[256];
 
         /* Child */
+        /// 关闭打开的描述符
         closeListeningSockets(0);
+        /// 设置进程名字...方便调试ps -elf
         redisSetProcTitle("redis-aof-rewrite");
+        /// 名字和temp-rewirteaof-%d.aof不一样哦
         snprintf(tmpfile,256,"temp-rewriteaof-bg-%d.aof", (int) getpid());
+        /// 开始重写
         if (rewriteAppendOnlyFile(tmpfile) == REDIS_OK) {
             size_t private_dirty = zmalloc_get_private_dirty();
 
@@ -1408,6 +1425,7 @@ int rewriteAppendOnlyFileBackground(void) {
         }
     } else {
         /* Parent */
+        /// 这里面有些变量和函数暂时看不懂????
         server.stat_fork_time = ustime()-start;
         server.stat_fork_rate = (double) zmalloc_used_memory() * 1000000 / server.stat_fork_time / (1024*1024*1024); /* GB per second. */
         latencyAddSampleIfNeeded("fork",server.stat_fork_time/1000);
@@ -1427,17 +1445,21 @@ int rewriteAppendOnlyFileBackground(void) {
          * feedAppendOnlyFile() to issue a SELECT command, so the differences
          * accumulated by the parent into server.aof_rewrite_buf will start
          * with a SELECT statement and it will be safe to merge. */
+        /// 强制AOF命令要先选择数据库,保证正确性
         server.aof_selected_db = -1;
+        /// ????
         replicationScriptCacheFlush();
         return REDIS_OK;
     }
     return REDIS_OK; /* unreached */
 }
 
+/// 后台重写AOF命令
 void bgrewriteaofCommand(redisClient *c) {
     if (server.aof_child_pid != -1) {
         addReplyError(c,"Background append only file rewriting already in progress");
     } else if (server.rdb_child_pid != -1) {
+        /// ???? 这个变量是什么鬼
         server.aof_rewrite_scheduled = 1;
         addReplyStatus(c,"Background append only file rewriting scheduled");
     } else if (rewriteAppendOnlyFileBackground() == REDIS_OK) {
@@ -1447,6 +1469,7 @@ void bgrewriteaofCommand(redisClient *c) {
     }
 }
 
+/// 删除AOF后台重写的临时文件
 void aofRemoveTempFile(pid_t childpid) {
     char tmpfile[256];
 
