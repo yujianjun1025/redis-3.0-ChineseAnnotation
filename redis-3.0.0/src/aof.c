@@ -96,7 +96,7 @@ unsigned long aofRewriteBufferSize(void) {
  * rewrite. We send pieces of our AOF differences buffer so that the final
  * write when the child finishes the rewrite will be small. */
 /// 事件函数,用于redis server 写aof diff
-/// 这里的AOF是redis-server执行AOF过程中redis-server变化的数据,暂存到
+/// 这里的AOF是redis-server执行AOF过程中redis-server变化的数据,暂存到aof_rewrite_buf_blocks中
 void aofChildWriteDiffData(aeEventLoop *el, int fd, void *privdata, int mask) {
     listNode *ln;
     aofrwblock *block;
@@ -590,7 +590,7 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
      * can append the differences to the new append only file. */
     if (server.aof_child_pid != -1)
     {
-        /// 网aof rewrite buffer中添加buf
+        /// 往aof rewrite buffer中添加buf
         aofRewriteBufferAppend((unsigned char*)buf,sdslen(buf));
     }
 
@@ -1481,6 +1481,7 @@ void aofRemoveTempFile(pid_t childpid) {
  * to check the size of the file. This is useful after a rewrite or after
  * a restart, normally the size is updated just adding the write length
  * to the current length, that is much faster. */
+/// 获取AOF文件状态并更新到reids-server相关变量中
 void aofUpdateCurrentSize(void) {
     struct redis_stat sb;
     mstime_t latency;
@@ -1498,7 +1499,10 @@ void aofUpdateCurrentSize(void) {
 
 /* A background append only file rewriting (BGREWRITEAOF) terminated its work.
  * Handle this. */
+/// aof后台写进程完成后执行的函数,还是看不太懂????
+/// 要把redis-server里所有的aof buffer之类的定义全部搞清楚,再把整个文件全部看一次
 void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
+    /// AOF是正确完成的,无错误
     if (!bysignal && exitcode == 0) {
         int newfd, oldfd;
         char tmpfile[256];
@@ -1513,6 +1517,7 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
         latencyStartMonitor(latency);
         snprintf(tmpfile,256,"temp-rewriteaof-bg-%d.aof",
             (int)server.aof_child_pid);
+        /// 用新的描述符打开temp-rewriteaof-bg-%d.aof文件
         newfd = open(tmpfile,O_WRONLY|O_APPEND);
         if (newfd == -1) {
             redisLog(REDIS_WARNING,
@@ -1520,6 +1525,8 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
             goto cleanup;
         }
 
+
+        /// 将rewrite_buf里的内容全部写入newfd
         if (aofRewriteBufferWrite(newfd) == -1) {
             redisLog(REDIS_WARNING,
                 "Error trying to flush the parent diff to the rewritten AOF: %s", strerror(errno));
@@ -1618,12 +1625,12 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
 
         redisLog(REDIS_VERBOSE,
             "Background AOF rewrite signal handler took %lldus", ustime()-now);
-    } else if (!bysignal && exitcode != 0) {
+    } else if (!bysignal && exitcode != 0) { /// AOF写入错误
         server.aof_lastbgrewrite_status = REDIS_ERR;
 
         redisLog(REDIS_WARNING,
             "Background AOF rewrite terminated with error");
-    } else {
+    } else { /// 因为接收到一些信号导致AOF错误
         server.aof_lastbgrewrite_status = REDIS_ERR;
 
         redisLog(REDIS_WARNING,
