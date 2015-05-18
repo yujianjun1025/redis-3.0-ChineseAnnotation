@@ -42,6 +42,15 @@
 void aofUpdateCurrentSize(void);
 void aofClosePipes(void);
 
+/// 关于redis AOF:
+/// 1.正常来说,如果AOF开启,那么每执行一个redis命令,就会把这个命令按照redis协议写如redis-server.aof_buf中(执行函数为feedAppendOnlyFile)
+/// 2.redis-server会根据我们的配置,定期的将redis-server.aof_buf的内容写入到AOF文件中(执行函数为flushAppendOnlyFile)
+/// 3.redis-server会在后台起一个子进程进行AOF文件的rewrite,所谓的rewrite,就是遍历当前整个redis-server的所有db,将所有的内容重新写入AOF文件中(执行函数rewriteAppendOnlyFile
+/// 4.在redis-server rewrite过程中,父进程key所发生的变化都会写入到aof_rewrite_buf_blocks中,也就是在AOF后台运行过程中执行redis命令,不仅将命令按照redis协议写入AOF文件,
+///   而且如果后台有AOF子进程正在运行,那么这个命令也会被写入到aof_rewrite_buf_blocks中,然后通过父进程的aofChildWriteDiffData函数通过管道与子进程通信.当子进程遍历完了变化前的
+///   redis-server后,再将rewrite过程中的变化通过管道读入,再写入AOF文件
+/// 5.关于为什么要rewrite 加入我们执行了命令 SADD key v1, v2, v3, v4, v5; SREM key v2, v3, v4, v5, 那么AOF文件最终版本其实只需要SADD key v1就好了
+
 /* ----------------------------------------------------------------------------
  * AOF rewrite buffer implementation.
  *
@@ -110,9 +119,9 @@ void aofChildWriteDiffData(aeEventLoop *el, int fd, void *privdata, int mask) {
         /// 拿到第一个AOF rewrite buffer
         ln = listFirst(server.aof_rewrite_buf_blocks);
         block = ln ? ln->value : NULL;
-        /// redis server 关闭aof或者AOF rewrite buffer为空
+        /// redis server 关闭发送AOF diff或者AOF rewrite buffer为空
         if (server.aof_stop_sending_diff || !block) {
-            /// 将写AOF事件删除
+            /// 将写AOF diff事件删除
             aeDeleteFileEvent(server.el,server.aof_pipe_write_data_to_child,
                               AE_WRITABLE);
             return;
@@ -178,9 +187,9 @@ void aofRewriteBufferAppend(unsigned char *s, unsigned long len) {
 
     /* Install a file event to send data to the rewrite child if there is
      * not one already. */
-    /// 如果没有注册写AOF事件
+    /// 如果没有注册写AOF diff事件
     if (aeGetFileEvents(server.el,server.aof_pipe_write_data_to_child) == 0) {
-        /// 创建一个写AOF事件
+        /// 创建一个写AOF diff事件
         aeCreateFileEvent(server.el, server.aof_pipe_write_data_to_child,
             AE_WRITABLE, aofChildWriteDiffData, NULL);
     }
@@ -588,6 +597,7 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
      * accumulate the differences between the child DB and the current one
      * in a buffer, so that when the child process will do its work we
      * can append the differences to the new append only file. */
+    /// 如果有后台的AOF重写进程正在进行,那么把命令写入到rewrite buf中
     if (server.aof_child_pid != -1)
     {
         /// 往aof rewrite buffer中添加buf
@@ -1135,6 +1145,7 @@ int rewriteAppendOnlyFile(char *filename) {
         return REDIS_ERR;
     }
 
+    /// 重写前先将aof_child_diff清空
     server.aof_child_diff = sdsempty();
     /// 初始化rio
     rioInitWithFile(&aof,fp);
@@ -1142,6 +1153,7 @@ int rewriteAppendOnlyFile(char *filename) {
     if (server.aof_rewrite_incremental_fsync)
         rioSetAutoSync(&aof,REDIS_AOF_AUTOSYNC_BYTES);
 
+    /// 这个东西是fork出来的,父进程的更新并不会来到这里
     /// 将当前db中的key obj全部遍历写入AOF文件中
     for (j = 0; j < server.dbnum; j++) {
         char selectcmd[] = "*2\r\n$6\r\nSELECT\r\n";
@@ -1262,7 +1274,7 @@ int rewriteAppendOnlyFile(char *filename) {
     redisLog(REDIS_NOTICE,
         "Concatenating %.2f MB of AOF diff received from parent.",
         (double) sdslen(server.aof_child_diff) / (1024*1024));
-    /// 写入AOF文件中
+    /// 将aof diff写入AOF文件中
     if (rioWrite(&aof,server.aof_child_diff,sdslen(server.aof_child_diff)) == 0)
         goto werr;
 
