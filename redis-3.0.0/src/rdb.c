@@ -332,14 +332,17 @@ int rdbSaveRawString(rio *rdb, unsigned char *s, size_t len) {
 }
 
 /* Save a long long value as either an encoded string or a string. */
+/// 将value保存到rdb中,value根据长度被直接保存或者转为string
 int rdbSaveLongLongAsStringObject(rio *rdb, long long value) {
     unsigned char buf[32];
     int n, nwritten = 0;
+    /// 先尝试直接保存long long 
     int enclen = rdbEncodeInteger(value,buf);
     if (enclen > 0) {
         return rdbWriteRaw(rdb,buf,enclen);
     } else {
         /* Encode as string */
+        /// value不能用long long保存,太大了,用string保存 
         enclen = ll2string((char*)buf,32,value);
         redisAssert(enclen < 32);
         if ((n = rdbSaveLen(rdb,enclen)) == -1) return -1;
@@ -351,6 +354,7 @@ int rdbSaveLongLongAsStringObject(rio *rdb, long long value) {
 }
 
 /* Like rdbSaveStringObjectRaw() but handle encoded objects */
+/// 根据string类型的obj编码,将其保存到rdb中
 int rdbSaveStringObject(rio *rdb, robj *obj) {
     /* Avoid to decode the object, then encode it again, if the
      * object is already integer encoded. */
@@ -362,12 +366,14 @@ int rdbSaveStringObject(rio *rdb, robj *obj) {
     }
 }
 
+/// 从rdb中读取一个string obj
 robj *rdbGenericLoadStringObject(rio *rdb, int encode) {
     int isencoded;
     uint32_t len;
     robj *o;
 
     len = rdbLoadLen(rdb,&isencoded);
+    /// 读到的是特殊编码,则根据编码进行解码
     if (isencoded) {
         switch(len) {
         case REDIS_RDB_ENC_INT8:
@@ -382,8 +388,10 @@ robj *rdbGenericLoadStringObject(rio *rdb, int encode) {
     }
 
     if (len == REDIS_RDB_LENERR) return NULL;
+    /// 创建一个len长度的redis obj
     o = encode ? createStringObject(NULL,len) :
                  createRawStringObject(NULL,len);
+    /// 从rdb中读取len长度的数据到obj中
     if (len && rioRead(rdb,o->ptr,len) == 0) {
         decrRefCount(o);
         return NULL;
@@ -407,16 +415,17 @@ robj *rdbLoadEncodedStringObject(rio *rdb) {
  * 254: + inf
  * 255: - inf
  */
+/// 将double值val写入rdb
 int rdbSaveDoubleValue(rio *rdb, double val) {
     unsigned char buf[128];
     int len;
 
     if (isnan(val)) {
-        buf[0] = 253;
+        buf[0] = 253; /// 不是double
         len = 1;
     } else if (!isfinite(val)) {
         len = 1;
-        buf[0] = (val < 0) ? 255 : 254;
+        buf[0] = (val < 0) ? 255 : 254;  /// +/-inf
     } else {
 #if (DBL_MANT_DIG >= 52) && (LLONG_MAX == 0x7fffffffffffffffLL)
         /* Check if the float is in a safe range to be casted into a
@@ -435,6 +444,7 @@ int rdbSaveDoubleValue(rio *rdb, double val) {
         else
 #endif
             snprintf((char*)buf+1,sizeof(buf)-1,"%.17g",val);
+        /// 保存double长度
         buf[0] = strlen((char*)buf+1);
         len = buf[0]+1;
     }
@@ -442,16 +452,19 @@ int rdbSaveDoubleValue(rio *rdb, double val) {
 }
 
 /* For information about double serialization check rdbSaveDoubleValue() */
+/// 从rdb读取double值
 int rdbLoadDoubleValue(rio *rdb, double *val) {
     char buf[256];
     unsigned char len;
 
+    /// 先读取长度
     if (rioRead(rdb,&len,1) == 0) return -1;
     switch(len) {
     case 255: *val = R_NegInf; return 0;
     case 254: *val = R_PosInf; return 0;
     case 253: *val = R_Nan; return 0;
     default:
+        /// 再根据len读取double值出来
         if (rioRead(rdb,buf,len) == 0) return -1;
         buf[len] = '\0';
         sscanf(buf, "%lg", val);
@@ -460,6 +473,7 @@ int rdbLoadDoubleValue(rio *rdb, double *val) {
 }
 
 /* Save the object type of object "o". */
+/// 将obj类型写入rdb
 int rdbSaveObjectType(rio *rdb, robj *o) {
     switch (o->type) {
     case REDIS_STRING:
@@ -500,14 +514,18 @@ int rdbSaveObjectType(rio *rdb, robj *o) {
 
 /* Use rdbLoadType() to load a TYPE in RDB format, but returns -1 if the
  * type is not specifically a valid Object Type. */
+/// 从rdb中读取类型
 int rdbLoadObjectType(rio *rdb) {
     int type;
+    /// 读type
     if ((type = rdbLoadType(rdb)) == -1) return -1;
+    /// 判断type是否有效
     if (!rdbIsObjectType(type)) return -1;
     return type;
 }
 
 /* Save a Redis object. Returns -1 on error, number of bytes written on success. */
+/// 将obj存入rdb中,返回obj在rdb中保存需要的长度
 int rdbSaveObject(rio *rdb, robj *o) {
     int n, nwritten = 0;
 
@@ -518,8 +536,10 @@ int rdbSaveObject(rio *rdb, robj *o) {
     } else if (o->type == REDIS_LIST) {
         /* Save a list value */
         if (o->encoding == REDIS_ENCODING_ZIPLIST) {
+            /// 得到长度
             size_t l = ziplistBlobLen((unsigned char*)o->ptr);
 
+            /// 保存
             if ((n = rdbSaveRawString(rdb,o->ptr,l)) == -1) return -1;
             nwritten += n;
         } else if (o->encoding == REDIS_ENCODING_LINKEDLIST) {
@@ -527,11 +547,13 @@ int rdbSaveObject(rio *rdb, robj *o) {
             listIter li;
             listNode *ln;
 
+            /// 保存整个链表长度
             if ((n = rdbSaveLen(rdb,listLength(list))) == -1) return -1;
             nwritten += n;
 
             listRewind(list,&li);
             while((ln = listNext(&li))) {
+                /// 再一个一个节点保存
                 robj *eleobj = listNodeValue(ln);
                 if ((n = rdbSaveStringObject(rdb,eleobj)) == -1) return -1;
                 nwritten += n;
@@ -546,10 +568,12 @@ int rdbSaveObject(rio *rdb, robj *o) {
             dictIterator *di = dictGetIterator(set);
             dictEntry *de;
 
+            /// 先保存整个set大小
             if ((n = rdbSaveLen(rdb,dictSize(set))) == -1) return -1;
             nwritten += n;
 
             while((de = dictNext(di)) != NULL) {
+                /// 再保存每个set value
                 robj *eleobj = dictGetKey(de);
                 if ((n = rdbSaveStringObject(rdb,eleobj)) == -1) return -1;
                 nwritten += n;
@@ -631,6 +655,7 @@ int rdbSaveObject(rio *rdb, robj *o) {
  * the rdbSaveObject() function. Currently we use a trick to get
  * this length with very little changes to the code. In the future
  * we could switch to a faster solution. */
+///  返回obj保存到rdb中需要的长度
 off_t rdbSavedObjectLen(robj *o) {
     int len = rdbSaveObject(NULL,o);
     redisAssertWithInfo(NULL,o,len != -1);
@@ -641,14 +666,19 @@ off_t rdbSavedObjectLen(robj *o) {
  * On error -1 is returned.
  * On success if the key was actually saved 1 is returned, otherwise 0
  * is returned (the key was already expired). */
+/// 将key value以及过期时间(如果有效的话)保存到rdb中
 int rdbSaveKeyValuePair(rio *rdb, robj *key, robj *val,
                         long long expiretime, long long now)
 {
     /* Save the expire time */
+    /// 保存过期时间
     if (expiretime != -1) {
         /* If this key is already expired skip it */
+        /// key已经过去了,不保存,直接返回0
         if (expiretime < now) return 0;
+        /// 保存过期时间为毫秒的特殊标识
         if (rdbSaveType(rdb,REDIS_RDB_OPCODE_EXPIRETIME_MS) == -1) return -1;
+        /// 保存过期时间
         if (rdbSaveMillisecondTime(rdb,expiretime) == -1) return -1;
     }
 
@@ -675,11 +705,15 @@ int rdbSaveRio(rio *rdb, int *error) {
     long long now = mstime();
     uint64_t cksum;
 
+    /// 设置校验值函数
     if (server.rdb_checksum)
         rdb->update_cksum = rioGenericUpdateChecksum;
+
     snprintf(magic,sizeof(magic),"REDIS%04d",REDIS_RDB_VERSION);
+    /// 写入表示rdb版本的魔数
     if (rdbWriteRaw(rdb,magic,9) == -1) goto werr;
 
+    /// 遍历整个数据库进行rdb写入
     for (j = 0; j < server.dbnum; j++) {
         redisDb *db = server.db+j;
         dict *d = db->dict;
@@ -688,10 +722,12 @@ int rdbSaveRio(rio *rdb, int *error) {
         if (!di) return REDIS_ERR;
 
         /* Write the SELECT DB opcode */
+        /// 保存select db命令
         if (rdbSaveType(rdb,REDIS_RDB_OPCODE_SELECTDB) == -1) goto werr;
         if (rdbSaveLen(rdb,j) == -1) goto werr;
 
         /* Iterate this DB writing every entry */
+        /// 遍历db的每一个key并保存
         while((de = dictNext(di)) != NULL) {
             sds keystr = dictGetKey(de);
             robj key, *o = dictGetVal(de);
@@ -699,6 +735,7 @@ int rdbSaveRio(rio *rdb, int *error) {
 
             initStaticStringObject(key,keystr);
             expire = getExpire(db,&key);
+            /// 保存redis key, obj
             if (rdbSaveKeyValuePair(rdb,&key,o,expire,now) == -1) goto werr;
         }
         dictReleaseIterator(di);
@@ -706,12 +743,14 @@ int rdbSaveRio(rio *rdb, int *error) {
     di = NULL; /* So that we don't release it again on error. */
 
     /* EOF opcode */
+    /// 写入表示rdb EOF的特殊标识
     if (rdbSaveType(rdb,REDIS_RDB_OPCODE_EOF) == -1) goto werr;
 
     /* CRC64 checksum. It will be zero if checksum computation is disabled, the
      * loading code skips the check in this case. */
     cksum = rdb->cksum;
     memrev64ifbe(&cksum);
+    /// 写入校验值
     if (rioWrite(rdb,&cksum,8) == 0) goto werr;
     return REDIS_OK;
 
@@ -729,6 +768,7 @@ werr:
  * While the suffix is the 40 bytes hex string we announced in the prefix.
  * This way processes receiving the payload can understand when it ends
  * without doing any processing of the content. */
+/// 这个是搞啥的啊????
 int rdbSaveRioWithEOFMark(rio *rdb, int *error) {
     char eofmark[REDIS_EOF_MARK_SIZE];
 
