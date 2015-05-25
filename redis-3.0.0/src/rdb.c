@@ -788,6 +788,7 @@ werr: /* Write error. */
 }
 
 /* Save the DB on disk. Return REDIS_ERR on error, REDIS_OK on success. */
+/// 将redis快照保存在名为filename的文件中
 int rdbSave(char *filename) {
     char tmpfile[256];
     FILE *fp;
@@ -803,18 +804,21 @@ int rdbSave(char *filename) {
     }
 
     rioInitWithFile(&rdb,fp);
+    /// 保存rdb文件
     if (rdbSaveRio(&rdb,&error) == REDIS_ERR) {
         errno = error;
         goto werr;
     }
 
     /* Make sure data will not remain on the OS's output buffers */
+    /// 对OS缓存进行刷新
     if (fflush(fp) == EOF) goto werr;
     if (fsync(fileno(fp)) == -1) goto werr;
     if (fclose(fp) == EOF) goto werr;
 
     /* Use RENAME to make sure the DB file is changed atomically only
      * if the generate DB file is ok. */
+    /// 将rdb 临时文件替换为正式的rdb文件名
     if (rename(tmpfile,filename) == -1) {
         redisLog(REDIS_WARNING,"Error moving temp DB file on the final destination: %s", strerror(errno));
         unlink(tmpfile);
@@ -833,6 +837,7 @@ werr:
     return REDIS_ERR;
 }
 
+/// 后台保存rdb文件,fork进程
 int rdbSaveBackground(char *filename) {
     pid_t childpid;
     long long start;
@@ -843,12 +848,14 @@ int rdbSaveBackground(char *filename) {
     server.lastbgsave_try = time(NULL);
 
     start = ustime();
-    if ((childpid = fork()) == 0) {
+    if ((childpid = fork()) == 0) { /// 子进程
         int retval;
 
         /* Child */
+        /// 关闭描述符
         closeListeningSockets(0);
         redisSetProcTitle("redis-rdb-bgsave");
+        /// 保存redis rdb文件
         retval = rdbSave(filename);
         if (retval == REDIS_OK) {
             size_t private_dirty = zmalloc_get_private_dirty();
@@ -860,7 +867,7 @@ int rdbSaveBackground(char *filename) {
             }
         }
         exitFromChild((retval == REDIS_OK) ? 0 : 1);
-    } else {
+    } else { /// 父进程
         /* Parent */
         server.stat_fork_time = ustime()-start;
         server.stat_fork_rate = (double) zmalloc_used_memory() * 1000000 / server.stat_fork_time / (1024*1024*1024); /* GB per second. */
@@ -916,11 +923,13 @@ robj *rdbLoadObject(int rdbtype, rio *rdb) {
 
             /* If we are using a ziplist and the value is too big, convert
              * the object to a real list. */
+            /// 若达到了链表节点最大字节数,尝试将list编码从ziplist转为普通链表
             if (o->encoding == REDIS_ENCODING_ZIPLIST &&
                 sdsEncodedObject(ele) &&
                 sdslen(ele->ptr) > server.list_max_ziplist_value)
                     listTypeConvert(o,REDIS_ENCODING_LINKEDLIST);
 
+            /// 根据编码将rdb中的内容插入到list中
             if (o->encoding == REDIS_ENCODING_ZIPLIST) {
                 dec = getDecodedObject(ele);
                 o->ptr = ziplistPush(o->ptr,dec->ptr,sdslen(dec->ptr),REDIS_TAIL);
@@ -940,6 +949,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb) {
             o = createSetObject();
             /* It's faster to expand the dict to the right size asap in order
              * to avoid rehashing */
+            /// 直接将hash table扩展到合适的长度,避免在插入hash table过程中rehash
             if (len > DICT_HT_INITIAL_SIZE)
                 dictExpand(o->ptr,len);
         } else {
@@ -954,9 +964,11 @@ robj *rdbLoadObject(int rdbtype, rio *rdb) {
 
             if (o->encoding == REDIS_ENCODING_INTSET) {
                 /* Fetch integer value from element */
+                /// element可以用long long直接保存
                 if (isObjectRepresentableAsLongLong(ele,&llval) == REDIS_OK) {
                     o->ptr = intsetAdd(o->ptr,llval,NULL);
                 } else {
+                    /// 转set编码为hash table
                     setTypeConvert(o,REDIS_ENCODING_HT);
                     dictExpand(o->ptr,len);
                 }
@@ -981,6 +993,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb) {
         zs = o->ptr;
 
         /* Load every single element of the list/set */
+        /// 直接用skiplist保存
         while(zsetlen--) {
             robj *ele;
             double score;
@@ -1000,6 +1013,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb) {
         }
 
         /* Convert *after* loading, since sorted sets are not stored ordered. */
+        /// 如果zset很小,那么将编码从skiplist转为ziplist
         if (zsetLength(o) <= server.zset_max_ziplist_entries &&
             maxelelen <= server.zset_max_ziplist_value)
                 zsetConvert(o,REDIS_ENCODING_ZIPLIST);
@@ -1073,6 +1087,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb) {
                rdbtype == REDIS_RDB_TYPE_ZSET_ZIPLIST ||
                rdbtype == REDIS_RDB_TYPE_HASH_ZIPLIST)
     {
+        /// 这个分支都是啥鬼东西啊????
         robj *aux = rdbLoadStringObject(rdb);
 
         if (aux == NULL) return NULL;
@@ -1153,6 +1168,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb) {
 
 /* Mark that we are loading in the global state and setup the fields
  * needed to provide loading stats. */
+/// 将redis-server状态置为rdb loading,更新一些变量
 void startLoading(FILE *fp) {
     struct stat sb;
 
@@ -1160,6 +1176,7 @@ void startLoading(FILE *fp) {
     server.loading = 1;
     server.loading_start_time = time(NULL);
     server.loading_loaded_bytes = 0;
+    /// 读取fp的文件大小
     if (fstat(fileno(fp), &sb) == -1) {
         server.loading_total_bytes = 0;
     } else {
@@ -1168,19 +1185,23 @@ void startLoading(FILE *fp) {
 }
 
 /* Refresh the loading progress info */
+/// 更新redis-server loading偏移量为pos
 void loadingProgress(off_t pos) {
     server.loading_loaded_bytes = pos;
+    /// 更新server内存峰值
     if (server.stat_peak_memory < zmalloc_used_memory())
         server.stat_peak_memory = zmalloc_used_memory();
 }
 
 /* Loading finished */
+/// 停止rdb loading
 void stopLoading(void) {
     server.loading = 0;
 }
 
 /* Track loading progress in order to serve client's from time to time
    and if needed calculate rdb checksum  */
+/// 这个函数搞毛的???? 除了更新校验值,还做了一些奇怪的事情
 void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
     if (server.rdb_checksum)
         rioGenericUpdateChecksum(r, buf, len);
@@ -1198,6 +1219,7 @@ void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
     }
 }
 
+/// 从名为filename的rdb文件中读出redis obj
 int rdbLoad(char *filename) {
     uint32_t dbid;
     int type, rdbver;
@@ -1210,10 +1232,14 @@ int rdbLoad(char *filename) {
     if ((fp = fopen(filename,"r")) == NULL) return REDIS_ERR;
 
     rioInitWithFile(&rdb,fp);
+    /// 设置校验值更新函数
     rdb.update_cksum = rdbLoadProgressCallback;
+    /// 设置rdb读取最大块长度
     rdb.max_processing_chunk = server.loading_process_events_interval_bytes;
+    /// 把那个redis魔数读出来
     if (rioRead(&rdb,buf,9) == 0) goto eoferr;
     buf[9] = '\0';
+    /// 对比魔数以及redis版本号是否正确
     if (memcmp(buf,"REDIS",5) != 0) {
         fclose(fp);
         redisLog(REDIS_WARNING,"Wrong signature trying to load DB from file");
@@ -1235,6 +1261,7 @@ int rdbLoad(char *filename) {
 
         /* Read type. */
         if ((type = rdbLoadType(&rdb)) == -1) goto eoferr;
+        /// 如果编码类型为过期时间,先读出过期时间
         if (type == REDIS_RDB_OPCODE_EXPIRETIME) {
             if ((expiretime = rdbLoadTime(&rdb)) == -1) goto eoferr;
             /* We read the time so we need to read the object type again. */
@@ -1250,10 +1277,12 @@ int rdbLoad(char *filename) {
             if ((type = rdbLoadType(&rdb)) == -1) goto eoferr;
         }
 
+        /// 读到了rdb结尾
         if (type == REDIS_RDB_OPCODE_EOF)
             break;
 
         /* Handle SELECT DB opcode as a special case */
+        /// 选择我们要操作的db
         if (type == REDIS_RDB_OPCODE_SELECTDB) {
             if ((dbid = rdbLoadLen(&rdb,NULL)) == REDIS_RDB_LENERR)
                 goto eoferr;
@@ -1261,32 +1290,40 @@ int rdbLoad(char *filename) {
                 redisLog(REDIS_WARNING,"FATAL: Data file was created with a Redis server configured to handle more than %d databases. Exiting\n", server.dbnum);
                 exit(1);
             }
+            /// 指向对应的数据库,这里不用运行select命令
             db = server.db+dbid;
             continue;
         }
         /* Read key */
+        /// 读redis key
         if ((key = rdbLoadStringObject(&rdb)) == NULL) goto eoferr;
         /* Read value */
+        /// 读key对应的value,即redis obj
         if ((val = rdbLoadObject(type,&rdb)) == NULL) goto eoferr;
         /* Check if the key already expired. This function is used when loading
          * an RDB file from disk, either at startup, or when an RDB was
          * received from the master. In the latter case, the master is
          * responsible for key expiry. If we would expire keys here, the
          * snapshot taken by the master may not be reflected on the slave. */
+        /// 不是从库,key过期了
         if (server.masterhost == NULL && expiretime != -1 && expiretime < now) {
+            /// 删除key,删除value
             decrRefCount(key);
             decrRefCount(val);
             continue;
         }
         /* Add the new object in the hash table */
+        /// 将key,val恢复到db中
         dbAdd(db,key,val);
 
         /* Set the expire time if needed */
+        /// 设置过期时间
         if (expiretime != -1) setExpire(db,key,expiretime);
 
         decrRefCount(key);
     }
     /* Verify the checksum if RDB version is >= 5 */
+    /// 校验校验和
     if (rdbver >= 5 && server.rdb_checksum) {
         uint64_t cksum, expected = rdb.cksum;
 
