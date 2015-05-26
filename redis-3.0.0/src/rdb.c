@@ -1349,17 +1349,19 @@ eoferr: /* unexpected end of file is handled here with a fatal exit */
 
 /* A background saving child (BGSAVE) terminated its work. Handle this.
  * This function covers the case of actual BGSAVEs. */
+/// 后台保存完成回调函数 Disk
 void backgroundSaveDoneHandlerDisk(int exitcode, int bysignal) {
-    if (!bysignal && exitcode == 0) {
+    /// 保存后台保存rdb的状态到redis-server
+    if (!bysignal && exitcode == 0) { /// 没接受到信号且退出正常
         redisLog(REDIS_NOTICE,
             "Background saving terminated with success");
         server.dirty = server.dirty - server.dirty_before_bgsave;
         server.lastsave = time(NULL);
         server.lastbgsave_status = REDIS_OK;
-    } else if (!bysignal && exitcode != 0) {
+    } else if (!bysignal && exitcode != 0) { /// 没接受到信号且退出不正常
         redisLog(REDIS_WARNING, "Background saving error");
         server.lastbgsave_status = REDIS_ERR;
-    } else {
+    } else {  /// 接受到信号
         mstime_t latency;
 
         redisLog(REDIS_WARNING,
@@ -1370,9 +1372,11 @@ void backgroundSaveDoneHandlerDisk(int exitcode, int bysignal) {
         latencyAddSampleIfNeeded("rdb-unlink-temp-file",latency);
         /* SIGUSR1 is whitelisted, so we have a way to kill a child without
          * tirggering an error conditon. */
+        /// SIGUSR1用于杀掉子进程
         if (bysignal != SIGUSR1)
             server.lastbgsave_status = REDIS_ERR;
     }
+
     server.rdb_child_pid = -1;
     server.rdb_child_type = REDIS_RDB_CHILD_TYPE_NONE;
     server.rdb_save_time_last = time(NULL)-server.rdb_save_time_start;
@@ -1385,9 +1389,11 @@ void backgroundSaveDoneHandlerDisk(int exitcode, int bysignal) {
 /* A background saving child (BGSAVE) terminated its work. Handle this.
  * This function covers the case of RDB -> Salves socket transfers for
  * diskless replication. */
+/// 没太懂????
 void backgroundSaveDoneHandlerSocket(int exitcode, int bysignal) {
     uint64_t *ok_slaves;
 
+    /// 根据是否接收到信号及是否成功完成记录日志
     if (!bysignal && exitcode == 0) {
         redisLog(REDIS_NOTICE,
             "Background RDB transfer terminated with success");
@@ -1397,6 +1403,8 @@ void backgroundSaveDoneHandlerSocket(int exitcode, int bysignal) {
         redisLog(REDIS_WARNING,
             "Background transfer terminated by signal %d", bysignal);
     }
+
+    /// 更新状态
     server.rdb_child_pid = -1;
     server.rdb_child_type = REDIS_RDB_CHILD_TYPE_NONE;
     server.rdb_save_time_start = -1;
@@ -1494,6 +1502,7 @@ void backgroundSaveDoneHandler(int exitcode, int bysignal) {
 
 /* Spawn an RDB child that writes the RDB to the sockets of the slaves
  * that are currently in REDIS_REPL_WAIT_BGSAVE_START state. */
+/// 这个是干啥的....????
 int rdbSaveToSlavesSockets(void) {
     int *fds;
     uint64_t *clientids;
@@ -1509,6 +1518,7 @@ int rdbSaveToSlavesSockets(void) {
     /* Before to fork, create a pipe that will be used in order to
      * send back to the parent the IDs of the slaves that successfully
      * received all the writes. */
+    /// 创建管道用于通信
     if (pipe(pipefds) == -1) return REDIS_ERR;
     server.rdb_pipe_read_result_from_child = pipefds[0];
     server.rdb_pipe_write_result_to_parent = pipefds[1];
@@ -1523,9 +1533,11 @@ int rdbSaveToSlavesSockets(void) {
     numfds = 0;
 
     listRewind(server.slaves,&li);
+    /// 遍历slave列表
     while((ln = listNext(&li))) {
         redisClient *slave = ln->value;
 
+        /// 设置slave状态
         if (slave->replstate == REDIS_REPL_WAIT_BGSAVE_START) {
             clientids[numfds] = slave->id;
             fds[numfds++] = slave->fd;
@@ -1545,6 +1557,7 @@ int rdbSaveToSlavesSockets(void) {
         int retval;
         rio slave_sockets;
 
+        /// 初始化多个描述符的rio
         rioInitWithFdset(&slave_sockets,fds,numfds);
         zfree(fds);
 
@@ -1552,6 +1565,7 @@ int rdbSaveToSlavesSockets(void) {
         redisSetProcTitle("redis-rdb-to-slaves");
 
         retval = rdbSaveRioWithEOFMark(&slave_sockets,NULL);
+        /// rioFlush 返回1才是成功哦
         if (retval == REDIS_OK && rioFlush(&slave_sockets) == 0)
             retval = REDIS_ERR;
 
@@ -1630,6 +1644,7 @@ int rdbSaveToSlavesSockets(void) {
     return REDIS_OK; /* unreached */
 }
 
+/// save命令
 void saveCommand(redisClient *c) {
     if (server.rdb_child_pid != -1) {
         addReplyError(c,"Background save already in progress");
@@ -1642,6 +1657,7 @@ void saveCommand(redisClient *c) {
     }
 }
 
+/// 后台save命令
 void bgsaveCommand(redisClient *c) {
     if (server.rdb_child_pid != -1) {
         addReplyError(c,"Background save already in progress");
