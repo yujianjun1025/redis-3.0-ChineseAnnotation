@@ -273,6 +273,7 @@ writeerr:
 }
 
 /// 读取rdb中的压缩字符串并返回对应的redis obj
+/// 调用本函数前已经读取了编码信息REDIS_RDB_ENC_LZF
 robj *rdbLoadLzfStringObject(rio *rdb) {
     unsigned int len, clen;
     unsigned char *c = NULL;
@@ -768,7 +769,7 @@ werr:
  * While the suffix is the 40 bytes hex string we announced in the prefix.
  * This way processes receiving the payload can understand when it ends
  * without doing any processing of the content. */
-/// 这个是搞啥的啊????
+/// 写入带EOF标识的rdb文件
 int rdbSaveRioWithEOFMark(rio *rdb, int *error) {
     char eofmark[REDIS_EOF_MARK_SIZE];
 
@@ -888,6 +889,7 @@ int rdbSaveBackground(char *filename) {
     return REDIS_OK; /* unreached */
 }
 
+/// 删除RDB临时文件
 void rdbRemoveTempFile(pid_t childpid) {
     char tmpfile[256];
 
@@ -897,6 +899,7 @@ void rdbRemoveTempFile(pid_t childpid) {
 
 /* Load a Redis object of the specified type from the specified file.
  * On success a newly allocated object is returned, otherwise NULL. */
+/// 从rdb文件读取redis obj到redis server中
 robj *rdbLoadObject(int rdbtype, rio *rdb) {
     robj *o, *ele, *dec;
     size_t len;
@@ -1390,6 +1393,7 @@ void backgroundSaveDoneHandlerDisk(int exitcode, int bysignal) {
  * This function covers the case of RDB -> Salves socket transfers for
  * diskless replication. */
 /// 没太懂????
+/// ???? 还是不懂
 void backgroundSaveDoneHandlerSocket(int exitcode, int bysignal) {
     uint64_t *ok_slaves;
 
@@ -1486,6 +1490,7 @@ void backgroundSaveDoneHandlerSocket(int exitcode, int bysignal) {
 }
 
 /* When a background RDB saving/transfer terminates, call the right handler. */
+/// RDB后台保存完成后,根据RDB类型,调用相应的回调函数
 void backgroundSaveDoneHandler(int exitcode, int bysignal) {
     switch(server.rdb_child_type) {
     case REDIS_RDB_CHILD_TYPE_DISK:
@@ -1502,7 +1507,7 @@ void backgroundSaveDoneHandler(int exitcode, int bysignal) {
 
 /* Spawn an RDB child that writes the RDB to the sockets of the slaves
  * that are currently in REDIS_REPL_WAIT_BGSAVE_START state. */
-/// 这个是干啥的....????
+/// 这个是干啥的....???? 再读了一遍,master redis将rdb写给所有的slave redis,通过socket,目前疑问是,为什么不让从redis自己保存
 int rdbSaveToSlavesSockets(void) {
     int *fds;
     uint64_t *clientids;
@@ -1564,6 +1569,7 @@ int rdbSaveToSlavesSockets(void) {
         closeListeningSockets(0);
         redisSetProcTitle("redis-rdb-to-slaves");
 
+        /// 这里就把整个数据库写成RDB发往slave_sockets里面去了
         retval = rdbSaveRioWithEOFMark(&slave_sockets,NULL);
         /// rioFlush 返回1才是成功哦
         if (retval == REDIS_OK && rioFlush(&slave_sockets) == 0)
@@ -1593,6 +1599,9 @@ int rdbSaveToSlavesSockets(void) {
              * can match the report with a specific slave, and 'error' is
              * set to 0 if the replication process terminated with a success
              * or the error code if an error occurred. */
+
+            /// <len> <slave[0].id> <slave[0].error> ...
+            /// 按照以上格式通过管道写回给父进程,通告redis从库的rdb保存情况
             void *msg = zmalloc(sizeof(uint64_t)*(1+2*numfds));
             uint64_t *len = msg;
             uint64_t *ids = len+1;

@@ -53,15 +53,17 @@
  *
  * Lengths up to 63 are stored using a single byte, most DB keys, and may
  * values, will fit inside. */
+/// 以下的宏定义用来表示redis obj长度
 #define REDIS_RDB_6BITLEN 0
 #define REDIS_RDB_14BITLEN 1
 #define REDIS_RDB_32BITLEN 2
-#define REDIS_RDB_ENCVAL 3
+#define REDIS_RDB_ENCVAL 3 /// 用来表示接下来的编码为INTEGER
 #define REDIS_RDB_LENERR UINT_MAX
 
 /* When a length of a string object stored on disk has the first two bits
  * set, the remaining two bits specify a special encoding for the object
  * accordingly to the following defines: */
+/// 这几种RDB_ENC_XXXX 都是为了方便/最高效率的保存STRING obj
 #define REDIS_RDB_ENC_INT8 0        /* 8 bit signed integer */
 #define REDIS_RDB_ENC_INT16 1       /* 16 bit signed integer */
 #define REDIS_RDB_ENC_INT32 2       /* 32 bit signed integer */
