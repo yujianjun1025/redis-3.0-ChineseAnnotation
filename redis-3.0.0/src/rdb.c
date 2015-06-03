@@ -778,6 +778,7 @@ int rdbSaveRioWithEOFMark(rio *rdb, int *error) {
     if (rioWrite(rdb,"$EOF:",5) == 0) goto werr;
     if (rioWrite(rdb,eofmark,REDIS_EOF_MARK_SIZE) == 0) goto werr;
     if (rioWrite(rdb,"\r\n",2) == 0) goto werr;
+    /// 这里对整个redis-server所有的数据库进行了写入
     if (rdbSaveRio(rdb,error) == REDIS_ERR) goto werr;
     if (rioWrite(rdb,eofmark,REDIS_EOF_MARK_SIZE) == 0) goto werr;
     return REDIS_OK;
@@ -1084,7 +1085,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb) {
         /* All pairs should be read by now */
         redisAssert(len == 0);
 
-    } else if (rdbtype == REDIS_RDB_TYPE_HASH_ZIPMAP  ||
+    } else if (rdbtype == REDIS_RDB_TYPE_HASH_ZIPMAP  || /// 没有这个REDIS_RDB_TYPE_HASH_ZIPMAP编码格式吧...
                rdbtype == REDIS_RDB_TYPE_LIST_ZIPLIST ||
                rdbtype == REDIS_RDB_TYPE_SET_INTSET   ||
                rdbtype == REDIS_RDB_TYPE_ZSET_ZIPLIST ||
