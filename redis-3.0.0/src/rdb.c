@@ -527,6 +527,7 @@ int rdbLoadObjectType(rio *rdb) {
 
 /* Save a Redis object. Returns -1 on error, number of bytes written on success. */
 /// 将obj存入rdb中,返回obj在rdb中保存需要的长度
+/// 注:编码为ziplist格式的,都是直接将ziplist这段内存保存在rdb文件中,例如:<ziplist len><ziplist context>
 int rdbSaveObject(rio *rdb, robj *o) {
     int n, nwritten = 0;
 
