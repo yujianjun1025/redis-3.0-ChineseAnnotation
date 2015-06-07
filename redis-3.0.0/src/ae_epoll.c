@@ -31,20 +31,24 @@
 
 #include <sys/epoll.h>
 
+/// 封装了epoll_event的结构体
 typedef struct aeApiState {
     int epfd;
     struct epoll_event *events;
 } aeApiState;
 
+/// 创建事件循环
 static int aeApiCreate(aeEventLoop *eventLoop) {
     aeApiState *state = zmalloc(sizeof(aeApiState));
 
     if (!state) return -1;
+    /// 创建setsize个epoll_event
     state->events = zmalloc(sizeof(struct epoll_event)*eventLoop->setsize);
     if (!state->events) {
         zfree(state);
         return -1;
     }
+    /// 创建epoll文件描述符
     state->epfd = epoll_create(1024); /* 1024 is just a hint for the kernel */
     if (state->epfd == -1) {
         zfree(state->events);
@@ -55,13 +59,16 @@ static int aeApiCreate(aeEventLoop *eventLoop) {
     return 0;
 }
 
+/// 重新设置事件循环的大小
 static int aeApiResize(aeEventLoop *eventLoop, int setsize) {
     aeApiState *state = eventLoop->apidata;
 
+    /// 直接remalloc就好,因为描述符的状态都保存在自己对应的epoll_event中
     state->events = zrealloc(state->events, sizeof(struct epoll_event)*setsize);
     return 0;
 }
 
+/// 释放事件循环
 static void aeApiFree(aeEventLoop *eventLoop) {
     aeApiState *state = eventLoop->apidata;
 
@@ -70,11 +77,13 @@ static void aeApiFree(aeEventLoop *eventLoop) {
     zfree(state);
 }
 
+/// 将描述符fd的mask时间添加到eventLoop中
 static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
     aeApiState *state = eventLoop->apidata;
     struct epoll_event ee;
     /* If the fd was already monitored for some event, we need a MOD
      * operation. Otherwise we need an ADD operation. */
+    /// 根据描述符fd之前的关心事件,决定操作方式是ADD还是MOD
     int op = eventLoop->events[fd].mask == AE_NONE ?
             EPOLL_CTL_ADD : EPOLL_CTL_MOD;
 
@@ -82,12 +91,14 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
     mask |= eventLoop->events[fd].mask; /* Merge old events */
     if (mask & AE_READABLE) ee.events |= EPOLLIN;
     if (mask & AE_WRITABLE) ee.events |= EPOLLOUT;
+
     ee.data.u64 = 0; /* avoid valgrind warning */
     ee.data.fd = fd;
     if (epoll_ctl(state->epfd,op,fd,&ee) == -1) return -1;
     return 0;
 }
 
+/// 将描述符fd的delmask时间从eventLoop中删除
 static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int delmask) {
     aeApiState *state = eventLoop->apidata;
     struct epoll_event ee;
@@ -107,6 +118,7 @@ static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int delmask) {
     }
 }
 
+/// 进行事件循环,tvp秒超时
 static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
     aeApiState *state = eventLoop->apidata;
     int retval, numevents = 0;
@@ -125,6 +137,7 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
             if (e->events & EPOLLOUT) mask |= AE_WRITABLE;
             if (e->events & EPOLLERR) mask |= AE_WRITABLE;
             if (e->events & EPOLLHUP) mask |= AE_WRITABLE;
+            /// 将对应的事件和描述符写入到eventLoop->fired中,隐藏底层实现
             eventLoop->fired[j].fd = e->data.fd;
             eventLoop->fired[j].mask = mask;
         }
@@ -132,6 +145,7 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
     return numevents;
 }
 
+/// 返回事件循环使用的API名称,这里为epoll
 static char *aeApiName(void) {
     return "epoll";
 }
