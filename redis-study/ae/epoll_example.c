@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 
 #include <stdio.h>
+#include <strings.h>
 
 int main(int argc, char* argv[])
 {
@@ -92,28 +93,46 @@ int main(int argc, char* argv[])
             else
             {
                 char read_buf[1024];
+                bzero(read_buf, sizeof(read_buf));
                 int fd = event_container[n].data.fd;
                 if (event_container[n].events & EPOLLIN)
                 {
                     int read_bytes = read(fd, read_buf, sizeof(read_buf));
                     if (read_bytes > 0)
                     {
-                        printf("read:\n%s", read_buf);
+                        printf("read:\n");
+                        printf("%s", read_buf);
+                    }
+                    else if (read_bytes == 0)
+                    {
+                        printf("read EOF\n");
+                        struct epoll_event ee;
+                        ee.events = 0;
+                        ee.events |= EPOLLIN;
+                        ee.data.fd = fd;
+                        if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, &ee) < 0)
+                        {
+                            printf("epoll_ctl() failed, del client's fd %d\n", fd);
+                            return -1;
+                        }
                     }
                     else
                     {
                         printf("read fd %d error\n", fd);
                     }
                 }
-                else if (event_container[n].events & EPOLLOUT)
+
+                if (event_container[n].events & EPOLLOUT)
                 {
 
                 }
-                else if (event_container[n].events & EPOLLERR)
+
+                if (event_container[n].events & EPOLLERR)
                 {
 
                 }
-                else if (event_container[n].events & EPOLLHUP)
+
+                if (event_container[n].events & EPOLLHUP)
                 {
 
                 }
