@@ -1413,6 +1413,7 @@ void processInputBuffer(redisClient *c) {
     }
 }
 
+/// 客户端描述符可读事件函数
 void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     redisClient *c = (redisClient*) privdata;
     int nread, readlen;
@@ -1494,6 +1495,7 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     server.current_client = NULL;
 }
 
+/// 找出客户端c->reply最长的和querybuf最大的,并写入longest_output_list和biggest_input_buffer中
 void getClientsMaxBuffers(unsigned long *longest_output_list,
                           unsigned long *biggest_input_buffer) {
     redisClient *c;
@@ -1502,6 +1504,7 @@ void getClientsMaxBuffers(unsigned long *longest_output_list,
     unsigned long lol = 0, bib = 0;
 
     listRewind(server.clients,&li);
+    /// 遍历客户端链表进行查询
     while ((ln = listNext(&li)) != NULL) {
         c = listNodeValue(ln);
 
@@ -1516,6 +1519,7 @@ void getClientsMaxBuffers(unsigned long *longest_output_list,
  * It writes the specified ip/port to "peerid" as a null termiated string
  * in the form ip:port if ip does not contain ":" itself, otherwise
  * [ip]:port format is used (for IPv6 addresses basically). */
+/// 将ip port格式化写入peerid中
 void formatPeerId(char *peerid, size_t peerid_len, char *ip, int port) {
     if (strchr(ip,':'))
         snprintf(peerid,peerid_len,"[%s]:%d",ip,port);
@@ -1536,16 +1540,19 @@ void formatPeerId(char *peerid, size_t peerid_len, char *ip, int port) {
  * On failure the function still populates 'peerid' with the "?:0" string
  * in case you want to relax error checking or need to display something
  * anyway (see anetPeerToString implementation for more info). */
+/// 计算client的peerid
 int genClientPeerId(redisClient *client, char *peerid, size_t peerid_len) {
     char ip[REDIS_IP_STR_LEN];
     int port;
 
+    /// UNIX域socket
     if (client->flags & REDIS_UNIX_SOCKET) {
         /* Unix socket client. */
         snprintf(peerid,peerid_len,"%s:0",server.unixsocket);
         return REDIS_OK;
     } else {
         /* TCP client. */
+        /// 得到fd描述符的IP端口
         int retval = anetPeerToString(client->fd,ip,sizeof(ip),&port);
         formatPeerId(peerid,peerid_len,ip,port);
         return (retval == -1) ? REDIS_ERR : REDIS_OK;
@@ -1556,6 +1563,7 @@ int genClientPeerId(redisClient *client, char *peerid, size_t peerid_len) {
  * if client->peerid is NULL, otherwise returning the cached value.
  * The Peer ID never changes during the life of the client, however it
  * is expensive to compute. */
+/// 返回client peerid,保存在c->peerid中,如果没有会先计算一次
 char *getClientPeerId(redisClient *c) {
     char peerid[REDIS_PEER_ID_LEN];
 
@@ -1568,6 +1576,7 @@ char *getClientPeerId(redisClient *c) {
 
 /* Concatenate a string representing the state of a client in an human
  * readable format, into the sds string 's'. */
+/// 将client的状态,信息等格式化写入sds中
 sds catClientInfoString(sds s, redisClient *client) {
     char flags[16], events[3], *p;
     int emask;
@@ -1618,33 +1627,39 @@ sds catClientInfoString(sds s, redisClient *client) {
         client->lastcmd ? client->lastcmd->name : "NULL");
 }
 
+/// 返回所有客户端的信息
 sds getAllClientsInfoString(void) {
     listNode *ln;
     listIter li;
     redisClient *client;
     sds o = sdsempty();
 
+    /// 为每个节点准备200字节
     o = sdsMakeRoomFor(o,200*listLength(server.clients));
     listRewind(server.clients,&li);
     while ((ln = listNext(&li)) != NULL) {
         client = listNodeValue(ln);
         o = catClientInfoString(o,client);
+        /// 一个client一行,换行
         o = sdscatlen(o,"\n",1);
     }
     return o;
 }
 
+/// CLIENT [LIST KILL GETNAME SETNAME]
 void clientCommand(redisClient *c) {
     listNode *ln;
     listIter li;
     redisClient *client;
 
+    /// CLIENT LIST
     if (!strcasecmp(c->argv[1]->ptr,"list") && c->argc == 2) {
         /* CLIENT LIST */
+        /// 将所有客户端信息状态等返回
         sds o = getAllClientsInfoString();
         addReplyBulkCBuffer(c,o,sdslen(o));
         sdsfree(o);
-    } else if (!strcasecmp(c->argv[1]->ptr,"kill")) {
+    } else if (!strcasecmp(c->argv[1]->ptr,"kill")) { /// CLIENT KILL
         /* CLIENT KILL <ip:port>
          * CLIENT KILL <option> [value] ... <option> [value] */
         char *addr = NULL;
@@ -1656,6 +1671,7 @@ void clientCommand(redisClient *c) {
         if (c->argc == 3) {
             /* Old style syntax: CLIENT KILL <addr> */
             addr = c->argv[2]->ptr;
+            /// skipme = 0表示client可以自杀
             skipme = 0; /* With the old form, you can kill yourself. */
         } else if (c->argc > 3) {
             int i = 2; /* Next option index. */
@@ -1664,13 +1680,13 @@ void clientCommand(redisClient *c) {
             while(i < c->argc) {
                 int moreargs = c->argc > i+1;
 
-                if (!strcasecmp(c->argv[i]->ptr,"id") && moreargs) {
+                if (!strcasecmp(c->argv[i]->ptr,"id") && moreargs) { /// id指明要kill的client id
                     long long tmp;
 
                     if (getLongLongFromObjectOrReply(c,c->argv[i+1],&tmp,NULL)
                         != REDIS_OK) return;
                     id = tmp;
-                } else if (!strcasecmp(c->argv[i]->ptr,"type") && moreargs) {
+                } else if (!strcasecmp(c->argv[i]->ptr,"type") && moreargs) {  /// type指明要kill的client的类型,有noble,slave,pubsub
                     type = getClientTypeByName(c->argv[i+1]->ptr);
                     if (type == -1) {
                         addReplyErrorFormat(c,"Unknown client type '%s'",
@@ -1700,18 +1716,26 @@ void clientCommand(redisClient *c) {
         }
 
         /* Iterate clients killing all the matching clients. */
+        /// 遍历客户端列表,根据kill后面的选项,筛选要kill的客户端
         listRewind(server.clients,&li);
         while ((ln = listNext(&li)) != NULL) {
             client = listNodeValue(ln);
+            /// 客户端地址不一样的,跳过
             if (addr && strcmp(getClientPeerId(client),addr) != 0) continue;
+            /// 客户端类型不一致的,跳过
             if (type != -1 &&
                 (client->flags & REDIS_MASTER ||
                  getClientType(client) != type)) continue;
+            /// 指定客户端id不一致的,跳过
             if (id != 0 && client->id != id) continue;
+            /// 不能自杀的,跳过
             if (c == client && skipme) continue;
 
+            /// 不满足规则的到达不了这里,关闭客户端
             /* Kill it. */
             if (c == client) {
+                /// 客户端自杀要做特殊处理, c->flags |= REDIS_CLOSE_AFTER_REPLY
+                /// 为什么要做特殊处理????????
                 close_this_client = 1;
             } else {
                 freeClient(client);
@@ -1731,13 +1755,17 @@ void clientCommand(redisClient *c) {
 
         /* If this client has to be closed, flag it as CLOSE_AFTER_REPLY
          * only after we queued the reply to its output buffers. */
-        if (close_this_client) c->flags |= REDIS_CLOSE_AFTER_REPLY;
-    } else if (!strcasecmp(c->argv[1]->ptr,"setname") && c->argc == 3) {
+        if (close_this_client) 
+        {
+            c->flags |= REDIS_CLOSE_AFTER_REPLY;
+        }
+    } else if (!strcasecmp(c->argv[1]->ptr,"setname") && c->argc == 3) { /// CLIENT SETNAME
         int j, len = sdslen(c->argv[2]->ptr);
         char *p = c->argv[2]->ptr;
 
         /* Setting the client name to an empty string actually removes
          * the current name. */
+        /// 设置名字为空
         if (len == 0) {
             if (c->name) decrRefCount(c->name);
             c->name = NULL;
@@ -1749,6 +1777,7 @@ void clientCommand(redisClient *c) {
          * CLIENT LIST format will break. You should always be able to
          * split by space to get the different fields. */
         for (j = 0; j < len; j++) {
+            /// 只能设置为ASCII字符
             if (p[j] < '!' || p[j] > '~') { /* ASCII is assumed. */
                 addReplyError(c,
                     "Client names cannot contain spaces, "
@@ -1756,20 +1785,28 @@ void clientCommand(redisClient *c) {
                 return;
             }
         }
-        if (c->name) decrRefCount(c->name);
+        /// 删除旧名字
+        if (c->name) 
+        {
+            decrRefCount(c->name);
+        }
+        /// 设置新名字
         c->name = c->argv[2];
         incrRefCount(c->name);
         addReply(c,shared.ok);
-    } else if (!strcasecmp(c->argv[1]->ptr,"getname") && c->argc == 2) {
+    } else if (!strcasecmp(c->argv[1]->ptr,"getname") && c->argc == 2) { /// CLIENT GETNAME
+        /// 返回名字或NULL
         if (c->name)
             addReplyBulk(c,c->name);
         else
             addReply(c,shared.nullbulk);
-    } else if (!strcasecmp(c->argv[1]->ptr,"pause") && c->argc == 3) {
+    } else if (!strcasecmp(c->argv[1]->ptr,"pause") && c->argc == 3) { /// CLIENT PAUSE duration_time
         long long duration;
 
+        /// 得到暂停时间
         if (getTimeoutFromObjectOrReply(c,c->argv[2],&duration,UNIT_MILLISECONDS)
                                         != REDIS_OK) return;
+        /// 暂停客户端
         pauseClients(duration);
         addReply(c,shared.ok);
     } else {
@@ -1780,6 +1817,7 @@ void clientCommand(redisClient *c) {
 /* Rewrite the command vector of the client. All the new objects ref count
  * is incremented. The old command vector is freed, and the old objects
  * ref count is decremented. */
+/// ???????????????
 void rewriteClientCommandVector(redisClient *c, int argc, ...) {
     va_list ap;
     int j;
@@ -1809,6 +1847,8 @@ void rewriteClientCommandVector(redisClient *c, int argc, ...) {
 
 /* Rewrite a single item in the command vector.
  * The new val ref count is incremented, and the old decremented. */
+/// ???????????????
+void rewriteClientCommandVector(redisClient *c, int argc, ...) {
 void rewriteClientCommandArgument(redisClient *c, int i, robj *newval) {
     robj *oldval;
 
@@ -1838,6 +1878,7 @@ void rewriteClientCommandArgument(redisClient *c, int i, robj *newval) {
  * Note: this function is very fast so can be called as many time as
  * the caller wishes. The main usage of this function currently is
  * enforcing the client output length limits. */
+/// 返回client一共用于写的所有内存大小
 unsigned long getClientOutputBufferMemoryUsage(redisClient *c) {
     unsigned long list_item_size = sizeof(listNode)+sizeof(robj);
 
@@ -1852,6 +1893,7 @@ unsigned long getClientOutputBufferMemoryUsage(redisClient *c) {
  * REDIS_CLIENT_TYPE_SLAVE  -> Slave or client executing MONITOR command
  * REDIS_CLIENT_TYPE_PUBSUB -> Client subscribed to Pub/Sub channels
  */
+/// 返回客户端类型
 int getClientType(redisClient *c) {
     if ((c->flags & REDIS_SLAVE) && !(c->flags & REDIS_MONITOR))
         return REDIS_CLIENT_TYPE_SLAVE;
@@ -1860,6 +1902,7 @@ int getClientType(redisClient *c) {
     return REDIS_CLIENT_TYPE_NORMAL;
 }
 
+/// 根据名字返回客户端类型
 int getClientTypeByName(char *name) {
     if (!strcasecmp(name,"normal")) return REDIS_CLIENT_TYPE_NORMAL;
     else if (!strcasecmp(name,"slave")) return REDIS_CLIENT_TYPE_SLAVE;
@@ -1867,6 +1910,7 @@ int getClientTypeByName(char *name) {
     else return -1;
 }
 
+/// 根据客户端类型返回类型名
 char *getClientTypeName(int class) {
     switch(class) {
     case REDIS_CLIENT_TYPE_NORMAL: return "normal";
