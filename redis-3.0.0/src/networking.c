@@ -1817,7 +1817,10 @@ void clientCommand(redisClient *c) {
 /* Rewrite the command vector of the client. All the new objects ref count
  * is incremented. The old command vector is freed, and the old objects
  * ref count is decremented. */
-/// ???????????????
+/// 将client原来的argc改写为argc,argv改写为... 可变个数的参数
+/// 应用场景:如SPOP x
+/// 改写为:    SREM x val
+/// 需要调用:  rewriteClientCommandVector(c, 3, "SREM", x, val)
 void rewriteClientCommandVector(redisClient *c, int argc, ...) {
     va_list ap;
     int j;
@@ -1828,6 +1831,7 @@ void rewriteClientCommandVector(redisClient *c, int argc, ...) {
     for (j = 0; j < argc; j++) {
         robj *a;
 
+        /// 依次将每一个参数写入argv中
         a = va_arg(ap, robj*);
         argv[j] = a;
         incrRefCount(a);
@@ -1838,6 +1842,7 @@ void rewriteClientCommandVector(redisClient *c, int argc, ...) {
     for (j = 0; j < c->argc; j++) decrRefCount(c->argv[j]);
     zfree(c->argv);
     /* Replace argv and argc with our new versions. */
+    /// 替换argc和argv为新的
     c->argv = argv;
     c->argc = argc;
     c->cmd = lookupCommandOrOriginal(c->argv[0]->ptr);
@@ -1847,8 +1852,12 @@ void rewriteClientCommandVector(redisClient *c, int argc, ...) {
 
 /* Rewrite a single item in the command vector.
  * The new val ref count is incremented, and the old decremented. */
-/// ???????????????
-void rewriteClientCommandVector(redisClient *c, int argc, ...) {
+/// 将client的argv[i]设置为newval
+/// 应用场景:如命令: HINCRBYFLOAT key field increment
+///                  会被改写为
+///                  HSET key filed oldval+increment 方便SLAVE or AOF
+/// 此时就要调用rewriteClientCommandArgument(c, 0, "HSET")
+///             rewriteClientCommandArgument(c, 3, oldval+increment)
 void rewriteClientCommandArgument(redisClient *c, int i, robj *newval) {
     robj *oldval;
 
@@ -1926,27 +1935,40 @@ char *getClientTypeName(int class) {
  *
  * Return value: non-zero if the client reached the soft or the hard limit.
  *               Otherwise zero is returned. */
+/// 返回客户端c的output buffer是否超过了规定的大小
 int checkClientOutputBufferLimits(redisClient *c) {
     int soft = 0, hard = 0, class;
+    /// 拿到客户端使用的内存大小
     unsigned long used_mem = getClientOutputBufferMemoryUsage(c);
 
+    /// 拿到客户端类型
     class = getClientType(c);
+    /// 查看客户端使用内存是否超过了redis-server对这种类型的client内存硬件大小限制
     if (server.client_obuf_limits[class].hard_limit_bytes &&
         used_mem >= server.client_obuf_limits[class].hard_limit_bytes)
+    {
         hard = 1;
+    }
+
+    /// 查看客户端使用内存是否超过了redis-server对这种类型的client内存软件大小限制
     if (server.client_obuf_limits[class].soft_limit_bytes &&
         used_mem >= server.client_obuf_limits[class].soft_limit_bytes)
+    {
         soft = 1;
+    }
 
     /* We need to check if the soft limit is reached continuously for the
      * specified amount of seconds. */
+    /// 如果内存超过了soft限制
     if (soft) {
+        /// 第一次超过,记录一下时间
         if (c->obuf_soft_limit_reached_time == 0) {
             c->obuf_soft_limit_reached_time = server.unixtime;
             soft = 0; /* First time we see the soft limit reached */
-        } else {
+        } else { /// 之前也超过了
             time_t elapsed = server.unixtime - c->obuf_soft_limit_reached_time;
 
+            /// 如果持续的时间少于我们限制的时间,那么无视
             if (elapsed <=
                 server.client_obuf_limits[class].soft_limit_seconds) {
                 soft = 0; /* The client still did not reached the max number of
@@ -1955,9 +1977,11 @@ int checkClientOutputBufferLimits(redisClient *c) {
             }
         }
     } else {
+        /// 不再有soft限制,将超过内存限制时间清零
         c->obuf_soft_limit_reached_time = 0;
     }
-    return soft || hard;
+
+    return soft || hard; /// 如果达到了硬件(hard)限制,那么返回肯定为1
 }
 
 /* Asynchronously close a client if soft or hard limit is reached on the
@@ -1967,13 +1991,22 @@ int checkClientOutputBufferLimits(redisClient *c) {
  * Note: we need to close the client asynchronously because this function is
  * called from contexts where the client can't be freed safely, i.e. from the
  * lower level functions pushing data inside the client output buffers. */
+/// 如果client超过了output buffer内存大小限制,那么将client异步关闭
 void asyncCloseClientOnOutputBufferLimitReached(redisClient *c) {
     redisAssert(c->reply_bytes < ULONG_MAX-(1024*64));
-    if (c->reply_bytes == 0 || c->flags & REDIS_CLOSE_ASAP) return;
+    /// client没有待发送的内容或者client已经在异步关闭列表中,直接返回
+    if (c->reply_bytes == 0 || c->flags & REDIS_CLOSE_ASAP) 
+    {
+        return;
+    }
+
+    /// 检查是否超过了限制
     if (checkClientOutputBufferLimits(c)) {
         sds client = catClientInfoString(sdsempty(),c);
 
+        /// 异步关闭client
         freeClientAsync(c);
+        /// 记录一条log
         redisLog(REDIS_WARNING,"Client %s scheduled to be closed ASAP for overcoming of output buffer limits.", client);
         sdsfree(client);
     }
@@ -1981,6 +2014,8 @@ void asyncCloseClientOnOutputBufferLimitReached(redisClient *c) {
 
 /* Helper function used by freeMemoryIfNeeded() in order to flush slaves
  * output buffers without returning control to the event loop. */
+/// 将slave client的reply返回给它
+/// 为什么不用注册描述符事件的方式,而要这样呢????????
 void flushSlavesOutputBuffers(void) {
     listIter li;
     listNode *ln;
@@ -1991,6 +2026,7 @@ void flushSlavesOutputBuffers(void) {
         int events;
 
         events = aeGetFileEvents(server.el,slave->fd);
+        /// 如果我们关心的事件有可写
         if (events & AE_WRITABLE &&
             slave->replstate == REDIS_REPL_ONLINE &&
             listLength(slave->reply))
@@ -2017,6 +2053,7 @@ void flushSlavesOutputBuffers(void) {
  * time left for the previous duration. However if the duration is smaller
  * than the time left for the previous pause, no change is made to the
  * left duration. */
+/// 将client暂时停止处理命令直到end时间
 void pauseClients(mstime_t end) {
     if (!server.clients_paused || end > server.clients_pause_end_time)
         server.clients_pause_end_time = end;
@@ -2025,7 +2062,9 @@ void pauseClients(mstime_t end) {
 
 /* Return non-zero if clients are currently paused. As a side effect the
  * function checks if the pause time was reached and clear it. */
+/// 返回客户端是否正被暂停,且如果暂停时间到了,进行相应的处理
 int clientsArePaused(void) {
+    /// 如果client的被暂停且paused时间到了
     if (server.clients_paused &&
         server.clients_pause_end_time < server.mstime)
     {
@@ -2033,6 +2072,7 @@ int clientsArePaused(void) {
         listIter li;
         redisClient *c;
 
+        /// 取消暂停client
         server.clients_paused = 0;
 
         /* Put all the clients in the unblocked clients queue in order to
@@ -2043,8 +2083,10 @@ int clientsArePaused(void) {
 
             /* Don't touch slaves and blocked clients. The latter pending
              * requests be processed when unblocked. */
+            /// 跳过SLAVE和阻塞中的客户端
             if (c->flags & (REDIS_SLAVE|REDIS_BLOCKED)) continue;
             c->flags |= REDIS_UNBLOCKED;
+            /// 将客户端添加到非阻塞客户端链表中
             listAddNodeTail(server.unblocked_clients,c);
         }
     }
@@ -2063,11 +2105,15 @@ int clientsArePaused(void) {
  * write, close sequence needed to serve a client.
  *
  * The function returns the total number of events processed. */
+/// 尽快的,DONT_WAIT处理几次事件循环,返回处理的事件数
 int processEventsWhileBlocked(void) {
     int iterations = 4; /* See the function top-comment. */
     int count = 0;
+    /// 最多处理4次事件循环
     while (iterations--) {
+        /// 不要阻塞,AE_DONT_WAIT表示尽快处理完一次事件循环,不要在耗时的地方停留
         int events = aeProcessEvents(server.el, AE_FILE_EVENTS|AE_DONT_WAIT);
+        /// 没有事件,那么停止处理
         if (!events) break;
         count += events;
     }

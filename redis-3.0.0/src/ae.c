@@ -390,6 +390,7 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
  *
  * The function returns the number of events processed. */
 /// 根据flags处理事件
+/// 当指定了AE_DONT_WAIT时,不处理定时器事件,只处理文件描述符事件,且epoll_wait不设置超时时间,马上返回
 int aeProcessEvents(aeEventLoop *eventLoop, int flags)
 {
     int processed = 0, numevents;

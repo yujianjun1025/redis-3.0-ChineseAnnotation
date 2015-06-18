@@ -701,6 +701,7 @@ int loadAppendOnlyFile(char *filename) {
         /// 不能在load aof时阻塞,要保持对客户端事件的处理
         if (!(loops++ % 1000)) {
             loadingProgress(ftello(fp));
+            /// 处理一些快速的,不会阻塞的事件
             processEventsWhileBlocked();
         }
 
