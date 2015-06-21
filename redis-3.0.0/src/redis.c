@@ -120,6 +120,7 @@ struct redisServer server; /* server global state */
  *    Note that commands that may trigger a DEL as a side effect (like SET)
  *    are not fast commands.
  */
+/// redis命令表
 struct redisCommand redisCommandTable[] = {
     {"get",getCommand,2,"rF",0,NULL,1,1,1,0,0},
     {"set",setCommand,-3,"wm",0,NULL,1,1,1,0,0},
@@ -290,6 +291,7 @@ struct evictionPoolEntry *evictionPoolAlloc(void);
 
 /*============================ Utility functions ============================ */
 
+/// LOG函数不过多去追究了
 /* Low level logging. To use only for very big messages, otherwise
  * redisLog() is to prefer. */
 void redisLogRaw(int level, const char *msg) {
@@ -297,14 +299,20 @@ void redisLogRaw(int level, const char *msg) {
     const char *c = ".-*#";
     FILE *fp;
     char buf[64];
+    /// 如果设置了REDIS_LOG_RAW,那么日志内容不带时间戳
     int rawmode = (level & REDIS_LOG_RAW);
     int log_to_stdout = server.logfile[0] == '\0';
 
     level &= 0xff; /* clear flags */
+    /// level低于我们设置的level,直接返回,不记录日志
     if (level < server.verbosity) return;
 
+    /// 每一次记录日志都要频繁的打开关闭文件,效率低
     fp = log_to_stdout ? stdout : fopen(server.logfile,"a");
-    if (!fp) return;
+    if (!fp) 
+    {
+        return;
+    }
 
     if (rawmode) {
         fprintf(fp,"%s",msg);
@@ -315,6 +323,7 @@ void redisLogRaw(int level, const char *msg) {
         pid_t pid = getpid();
 
         gettimeofday(&tv,NULL);
+        /// buf存放timestamp
         off = strftime(buf,sizeof(buf),"%d %b %H:%M:%S.",localtime(&tv.tv_sec));
         snprintf(buf+off,sizeof(buf)-off,"%03d",(int)tv.tv_usec/1000);
         if (server.sentinel_mode) {
@@ -327,17 +336,22 @@ void redisLogRaw(int level, const char *msg) {
         fprintf(fp,"%d:%c %s %c %s\n",
             (int)getpid(),role_char, buf,c[level],msg);
     }
+    /// 刷新文件流
     fflush(fp);
 
+    /// 关闭文件
     if (!log_to_stdout) fclose(fp);
+    /// 居然还要记录syslog
     if (server.syslog_enabled) syslog(syslogLevelMap[level], "%s", msg);
 }
 
 /* Like redisLogRaw() but with printf-alike support. This is the function that
  * is used across the code. The raw version is only used in order to dump
  * the INFO output on crash. */
+/// 普通的格式化日志
 void redisLog(int level, const char *fmt, ...) {
     va_list ap;
+    /// 最多只有1K的普通日志
     char msg[REDIS_MAX_LOGMSG_LEN];
 
     if ((level&0xff) < server.verbosity) return;
@@ -355,6 +369,7 @@ void redisLog(int level, const char *fmt, ...) {
  * We actually use this only for signals that are not fatal from the point
  * of view of Redis. Signals that are going to kill the server anyway and
  * where we need printf-alike features are served by redisLog(). */
+/// 将msg写入日志,该函数一般情况下只在信号中断处理函数中调用
 void redisLogFromHandler(int level, const char *msg) {
     int fd;
     int log_to_stdout = server.logfile[0] == '\0';
@@ -378,6 +393,7 @@ err:
 }
 
 /* Return the UNIX time in microseconds */
+/// 返回当前时间,单位:us
 long long ustime(void) {
     struct timeval tv;
     long long ust;
@@ -389,6 +405,7 @@ long long ustime(void) {
 }
 
 /* Return the UNIX time in milliseconds */
+/// 返回当前时间,单位:ms
 long long mstime(void) {
     return ustime()/1000;
 }
@@ -397,6 +414,7 @@ long long mstime(void) {
  * exit(), because the latter may interact with the same file objects used by
  * the parent process. However if we are testing the coverage normal exit() is
  * used in order to obtain the right coverage information. */
+/// 子进程退出,退出返回值为retcode
 void exitFromChild(int retcode) {
 #ifdef COVERAGE_TEST
     exit(retcode);
@@ -411,18 +429,23 @@ void exitFromChild(int retcode) {
  * keys and redis objects as values (objects can hold SDS strings,
  * lists, sets). */
 
+/// vanilla:简朴,平常
+/// dict最平常的Free函数:释放val的内存
 void dictVanillaFree(void *privdata, void *val)
 {
     DICT_NOTUSED(privdata);
     zfree(val);
 }
 
+/// dict中 val为list类型的Destructor
 void dictListDestructor(void *privdata, void *val)
 {
     DICT_NOTUSED(privdata);
+    /// 将val对应的链表释放
     listRelease((list*)val);
 }
 
+/// dict key为sds类型的对比
 int dictSdsKeyCompare(void *privdata, const void *key1,
         const void *key2)
 {
@@ -431,12 +454,15 @@ int dictSdsKeyCompare(void *privdata, const void *key1,
 
     l1 = sdslen((sds)key1);
     l2 = sdslen((sds)key2);
+    /// 先比长度
     if (l1 != l2) return 0;
+    /// 再比内容(二进制安全)
     return memcmp(key1, key2, l1) == 0;
 }
 
 /* A case insensitive version used for the command lookup table and other
  * places where case insensitive non binary-safe comparison is needed. */
+/// dict key为sds的无视大小写对比
 int dictSdsKeyCaseCompare(void *privdata, const void *key1,
         const void *key2)
 {
@@ -445,72 +471,90 @@ int dictSdsKeyCaseCompare(void *privdata, const void *key1,
     return strcasecmp(key1, key2) == 0;
 }
 
+/// dict val为redis obj的destructor
 void dictRedisObjectDestructor(void *privdata, void *val)
 {
     DICT_NOTUSED(privdata);
 
-    if (val == NULL) return; /* Values of swapped out keys as set to NULL */
+    if (val == NULL) 
+    {
+        return; /* Values of swapped out keys as set to NULL */
+    }
+    /// 减少引用计数
     decrRefCount(val);
 }
 
+/// dict val 为sds的destructor
 void dictSdsDestructor(void *privdata, void *val)
 {
     DICT_NOTUSED(privdata);
 
+    /// 释放sds
     sdsfree(val);
 }
 
+/// dict key 为redis-obj的对比(redis-obj其实o->ptr == sds)
 int dictObjKeyCompare(void *privdata, const void *key1,
         const void *key2)
 {
     const robj *o1 = key1, *o2 = key2;
+    /// 直接比对o->ptr里面的sds
     return dictSdsKeyCompare(privdata,o1->ptr,o2->ptr);
 }
 
+/// dict key为redis obj的哈希函数
 unsigned int dictObjHash(const void *key) {
     const robj *o = key;
     return dictGenHashFunction(o->ptr, sdslen((sds)o->ptr));
 }
 
+/// dict key为sds的哈希函数
 unsigned int dictSdsHash(const void *key) {
     return dictGenHashFunction((unsigned char*)key, sdslen((char*)key));
 }
 
+/// dct key为sds的不区分大小写的哈希函数
 unsigned int dictSdsCaseHash(const void *key) {
     return dictGenCaseHashFunction((unsigned char*)key, sdslen((char*)key));
 }
 
+/// dict key为encoded obj的比对函数,encoded 为INT或者RAW
 int dictEncObjKeyCompare(void *privdata, const void *key1,
         const void *key2)
 {
     robj *o1 = (robj*) key1, *o2 = (robj*) key2;
     int cmp;
 
+    /// INT类型直接比对
     if (o1->encoding == REDIS_ENCODING_INT &&
         o2->encoding == REDIS_ENCODING_INT)
             return o1->ptr == o2->ptr;
 
+    /// 拿出RAW类型
     o1 = getDecodedObject(o1);
     o2 = getDecodedObject(o2);
+    /// 比对sds
     cmp = dictSdsKeyCompare(privdata,o1->ptr,o2->ptr);
     decrRefCount(o1);
     decrRefCount(o2);
     return cmp;
 }
 
+/// dict key 为encoded obj的哈希函数
 unsigned int dictEncObjHash(const void *key) {
     robj *o = (robj*) key;
 
-    if (sdsEncodedObject(o)) {
+    if (sdsEncodedObject(o)) { /// 编码为RAW或者EMBSTR,总之就是字符(sds)
         return dictGenHashFunction(o->ptr, sdslen((sds)o->ptr));
-    } else {
+    } else { /// 编码类型为INT
         if (o->encoding == REDIS_ENCODING_INT) {
             char buf[32];
             int len;
 
+            /// 将INT转为STRING
             len = ll2string(buf,32,(long)o->ptr);
             return dictGenHashFunction((unsigned char*)buf, len);
-        } else {
+        } else { /// 这个分支到不了吧????????
             unsigned int hash;
 
             o = getDecodedObject(o);
@@ -648,6 +692,7 @@ dictType replScriptCacheDictType = {
     NULL                        /* val destructor */
 };
 
+/// 返回hash table的空间利用率是否小于10%
 int htNeedsResize(dict *dict) {
     long long size, used;
 
@@ -659,9 +704,11 @@ int htNeedsResize(dict *dict) {
 
 /* If the percentage of used slots in the HT reaches REDIS_HT_MINFILL
  * we resize the hash table to save memory */
+/// 如果dbid号数据库的dict和expires小于10%,那么将他resize,调整到最接近used的2^n
 void tryResizeHashTables(int dbid) {
     if (htNeedsResize(server.db[dbid].dict))
         dictResize(server.db[dbid].dict);
+
     if (htNeedsResize(server.db[dbid].expires))
         dictResize(server.db[dbid].expires);
 }
@@ -673,8 +720,10 @@ void tryResizeHashTables(int dbid) {
  *
  * The function returns 1 if some rehashing was performed, otherwise 0
  * is returned. */
+/// 如果dbid号的dict和expire正在rehash,那么进行一次快速的rehahs,并返回1,否则返回0
 int incrementallyRehash(int dbid) {
     /* Keys dictionary */
+    /// 如果dbid号的dict正在rehash中,那么将他rehash至多1ms,至少100个key(取决于dictRehashMilliseconds的实现)
     if (dictIsRehashing(server.db[dbid].dict)) {
         dictRehashMilliseconds(server.db[dbid].dict,1);
         return 1; /* already used our millisecond for this loop... */
@@ -693,11 +742,17 @@ int incrementallyRehash(int dbid) {
  * memory pages are copied). The goal of this function is to update the ability
  * for dict.c to resize the hash tables accordingly to the fact we have o not
  * running childs. */
+/// resize开关 
 void updateDictResizePolicy(void) {
+    /// 如果没有rdb或者aof子进程,那么允许resize
     if (server.rdb_child_pid == -1 && server.aof_child_pid == -1)
+    {
         dictEnableResize();
-    else
+    }
+    else /// 否则不允许resize
+    {
         dictDisableResize();
+    }
 }
 
 /* ======================= Cron: called every 100 ms ======================== */
@@ -713,8 +768,10 @@ void updateDictResizePolicy(void) {
  *
  * The parameter 'now' is the current time in milliseconds as is passed
  * to the function to avoid too many gettimeofday() syscalls. */
+/// 将expire dict的一个entry的expired time与now进行比对,如果超时了,那么将de删除,并返回1,否则返回0
 int activeExpireCycleTryExpire(redisDb *db, dictEntry *de, long long now) {
     long long t = dictGetSignedIntegerVal(de);
+    /// 当前时间大于expired time
     if (now > t) {
         sds key = dictGetKey(de);
         robj *keyobj = createStringObject(key,sdslen(key));
@@ -753,6 +810,7 @@ int activeExpireCycleTryExpire(redisDb *db, dictEntry *de, long long now) {
  * executed, where the time limit is a percentage of the REDIS_HZ period
  * as specified by the REDIS_EXPIRELOOKUPS_TIME_PERC define. */
 
+/// 根据type进行expired dict的过期key的delete操作,并统计avg_ttl等操作
 void activeExpireCycle(int type) {
     /* This function has some global state in order to continue the work
      * incrementally across calls. */
@@ -761,14 +819,16 @@ void activeExpireCycle(int type) {
     static long long last_fast_cycle = 0; /* When last fast cycle ran. */
 
     int j, iteration = 0;
-    int dbs_per_call = REDIS_DBCRON_DBS_PER_CALL;
+    int dbs_per_call = REDIS_DBCRON_DBS_PER_CALL; /// 16
     long long start = ustime(), timelimit;
 
     if (type == ACTIVE_EXPIRE_CYCLE_FAST) {
         /* Don't start a fast cycle if the previous cycle did not exited
          * for time limt. Also don't repeat a fast cycle for the same period
          * as the fast cycle total duration itself. */
+        /// 如果上一次没有因为timelimit而退出,那么直接返回...这个有啥用啊????????
         if (!timelimit_exit) return;
+        /// 距离上次fast_cycle不足2s
         if (start < last_fast_cycle + ACTIVE_EXPIRE_CYCLE_FAST_DURATION*2) return;
         last_fast_cycle = start;
     }
@@ -780,6 +840,7 @@ void activeExpireCycle(int type) {
      * 2) If last time we hit the time limit, we want to scan all DBs
      * in this iteration, as there is work to do in some DB and we don't want
      * expired keys to use memory for too much time. */
+    /// 最多只能遍历整个server所有的数据库
     if (dbs_per_call > server.dbnum || timelimit_exit)
         dbs_per_call = server.dbnum;
 
@@ -787,10 +848,12 @@ void activeExpireCycle(int type) {
      * per iteration. Since this function gets called with a frequency of
      * server.hz times per second, the following is the max amount of
      * microseconds we can spend in this function. */
+    /// ACTIVE_EXPIRE_CYCLE_SLOW的timelimit于server.hz有关
     timelimit = 1000000*ACTIVE_EXPIRE_CYCLE_SLOW_TIME_PERC/server.hz/100;
     timelimit_exit = 0;
     if (timelimit <= 0) timelimit = 1;
 
+    /// ACTIVE_EXPIRE_CYCLE_FAST的timelimit为ACTIVE_EXPIRE_CYCLE_FAST_DURATION
     if (type == ACTIVE_EXPIRE_CYCLE_FAST)
         timelimit = ACTIVE_EXPIRE_CYCLE_FAST_DURATION; /* in microseconds. */
 
@@ -811,6 +874,7 @@ void activeExpireCycle(int type) {
             int ttl_samples;
 
             /* If there is nothing to expire try next DB ASAP. */
+            /// expires dict里没有key
             if ((num = dictSize(db->expires)) == 0) {
                 db->avg_ttl = 0;
                 break;
@@ -821,6 +885,7 @@ void activeExpireCycle(int type) {
             /* When there are less than 1% filled slots getting random
              * keys is expensive, so stop here waiting for better times...
              * The dictionary will be resized asap. */
+            /// expired dict里只有不到1%的key
             if (num && slots > DICT_HT_INITIAL_SIZE &&
                 (num*100/slots < 1)) break;
 
@@ -830,6 +895,7 @@ void activeExpireCycle(int type) {
             ttl_sum = 0;
             ttl_samples = 0;
 
+            /// 最多遍历ACTIVE_EXPIRE_CYCLE_LOOKUPS_PER_LOOP个entry
             if (num > ACTIVE_EXPIRE_CYCLE_LOOKUPS_PER_LOOP)
                 num = ACTIVE_EXPIRE_CYCLE_LOOKUPS_PER_LOOP;
 
@@ -839,16 +905,22 @@ void activeExpireCycle(int type) {
 
                 if ((de = dictGetRandomKey(db->expires)) == NULL) break;
                 ttl = dictGetSignedIntegerVal(de)-now;
-                if (activeExpireCycleTryExpire(db,de,now)) expired++;
-                if (ttl < 0) ttl = 0;
+                /// 这个随机的entry的key超时了
+                if (activeExpireCycleTryExpire(db,de,now)) 
+                {
+                    expired++;
+                }
+                if (ttl < 0) ttl = 0; /// 不会超时的key的ttl计为0
                 ttl_sum += ttl;
                 ttl_samples++;
             }
 
             /* Update the average TTL stats for this database. */
             if (ttl_samples) {
+                /// 计算avg_ttl
                 long long avg_ttl = ttl_sum/ttl_samples;
 
+                /// 调整avg_ttl
                 if (db->avg_ttl == 0) db->avg_ttl = avg_ttl;
                 /* Smooth the value averaging with the previous one. */
                 db->avg_ttl = (db->avg_ttl+avg_ttl)/2;
@@ -858,16 +930,21 @@ void activeExpireCycle(int type) {
              * expire. So after a given amount of milliseconds return to the
              * caller waiting for the other active expire cycle. */
             iteration++;
+            /// 每16个key计算一次
             if ((iteration & 0xf) == 0) { /* check once every 16 iterations. */
                 long long elapsed = ustime()-start;
 
                 latencyAddSampleIfNeeded("expire-cycle",elapsed/1000);
-                if (elapsed > timelimit) timelimit_exit = 1;
+                /// 如果用时超过了timelimit,即将退出
+                if (elapsed > timelimit) 
+                {
+                    timelimit_exit = 1;
+                }
             }
             if (timelimit_exit) return;
             /* We don't repeat the cycle if there are less than 25% of keys
              * found expired in the current DB. */
-        } while (expired > ACTIVE_EXPIRE_CYCLE_LOOKUPS_PER_LOOP/4);
+        } while (expired > ACTIVE_EXPIRE_CYCLE_LOOKUPS_PER_LOOP/4); /// 如果一次可以取出多于25%的过期key,那么继续
     }
 }
 
