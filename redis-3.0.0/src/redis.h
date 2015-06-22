@@ -719,6 +719,7 @@ struct redisServer {
     long long stat_net_output_bytes; /* Bytes written to network. */
     /* The following two are used to track instantaneous metrics, like
      * number of operations per second, network traffic. */
+    /// 下面这个结构体用来做瞬间的测量,例如每一秒的命令数,网络效率等
     struct {
         long long last_sample_time; /* Timestamp of last sample in ms */
         long long last_sample_count;/* Count in last sample */

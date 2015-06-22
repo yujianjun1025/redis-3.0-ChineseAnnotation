@@ -953,6 +953,8 @@ unsigned int getLRUClock(void) {
 }
 
 /* Add a sample to the operations per second array of samples. */
+/// metric有三种类型,REDIS_METRIC_COMMAND,REDIS_METRIC_NET_INPUT,REDIS_METRIC_NET_OUTPUT
+/// 这个函数用来将metric类的数据进行采用统计,统计包括每秒处理的命令数,网络IN/OUT每秒kb数
 void trackInstantaneousMetric(int metric, long long current_reading) {
     long long t = mstime() - server.inst_metric[metric].last_sample_time;
     long long ops = current_reading -
@@ -961,6 +963,7 @@ void trackInstantaneousMetric(int metric, long long current_reading) {
 
     ops_sec = t > 0 ? (ops*1000/t) : 0;
 
+    /// idx从0-15依次轮流变化
     server.inst_metric[metric].samples[server.inst_metric[metric].idx] =
         ops_sec;
     server.inst_metric[metric].idx++;
@@ -970,19 +973,24 @@ void trackInstantaneousMetric(int metric, long long current_reading) {
 }
 
 /* Return the mean of all the samples. */
+/// 返回metric类型的REDIS_METRIC_SAMPLES的平均值
 long long getInstantaneousMetric(int metric) {
     int j;
     long long sum = 0;
 
+    /// 求和
     for (j = 0; j < REDIS_METRIC_SAMPLES; j++)
         sum += server.inst_metric[metric].samples[j];
+    /// 返回平均值
     return sum / REDIS_METRIC_SAMPLES;
 }
 
 /* Check for timeouts. Returns non-zero if the client was terminated */
+/// 检查c是否超过了server.maxidletime,如果超过了,释放客户端并返回1,否则返回0
 int clientsCronHandleTimeout(redisClient *c) {
     time_t now = server.unixtime;
 
+    /// client闲时时间超过了server.maxidletime
     if (server.maxidletime &&
         !(c->flags & REDIS_SLAVE) &&    /* no timeout for slaves */
         !(c->flags & REDIS_MASTER) &&   /* no timeout for masters */
@@ -990,10 +998,11 @@ int clientsCronHandleTimeout(redisClient *c) {
         !(c->flags & REDIS_PUBSUB) &&   /* no timeout for Pub/Sub clients */
         (now - c->lastinteraction > server.maxidletime))
     {
+        /// 将client释放
         redisLog(REDIS_VERBOSE,"Closing idle client");
         freeClient(c);
         return 1;
-    } else if (c->flags & REDIS_BLOCKED) {
+    } else if (c->flags & REDIS_BLOCKED) { /// 下面这个搞啥的还不太清楚????????
         /* Blocked OPS timeout is handled with milliseconds resolution.
          * However note that the actual resolution is limited by
          * server.hz. */
@@ -1017,6 +1026,7 @@ int clientsCronHandleTimeout(redisClient *c) {
  * free space not used, this function reclaims space if needed.
  *
  * The function always returns 0 as it never terminates the client. */
+/// 将c的querybuf的剩余空间释放(如果c满足条件的话)
 int clientsCronResizeQueryBuffer(redisClient *c) {
     size_t querybuf_size = sdsAllocSize(c->querybuf);
     time_t idletime = server.unixtime - c->lastinteraction;
@@ -1024,11 +1034,13 @@ int clientsCronResizeQueryBuffer(redisClient *c) {
     /* There are two conditions to resize the query buffer:
      * 1) Query buffer is > BIG_ARG and too big for latest peak.
      * 2) Client is inactive and the buffer is bigger than 1k. */
+    /// 大于32K且超过querybuf_peak的两倍或者闲时大于2s
     if (((querybuf_size > REDIS_MBULK_BIG_ARG) &&
          (querybuf_size/(c->querybuf_peak+1)) > 2) ||
          (querybuf_size > 1024 && idletime > 2))
     {
         /* Only resize the query buffer if it is actually wasting space. */
+        /// 将未用空间释放
         if (sdsavail(c->querybuf) > 1024) {
             c->querybuf = sdsRemoveFreeSpace(c->querybuf);
         }
@@ -1039,6 +1051,7 @@ int clientsCronResizeQueryBuffer(redisClient *c) {
     return 0;
 }
 
+/// client的周期处理函数
 void clientsCron(void) {
     /* Make sure to process at least 1/(server.hz*10) of clients per call.
      * Since this function is called server.hz times per second we are sure that
@@ -1048,8 +1061,10 @@ void clientsCron(void) {
     int numclients = listLength(server.clients);
     int iterations = numclients/(server.hz*10);
 
+    /// 一次最多只能遍历50个client
     if (iterations < 50)
         iterations = (numclients < 50) ? numclients : 50;
+
     while(listLength(server.clients) && iterations--) {
         redisClient *c;
         listNode *head;
@@ -1057,13 +1072,16 @@ void clientsCron(void) {
         /* Rotate the list, take the current head, process.
          * This way if the client must be removed from the list it's the
          * first element and we don't incur into O(N) computation. */
+        /// 每一次都将最后一个客户端移到head进行处理
         listRotate(server.clients);
         head = listFirst(server.clients);
         c = listNodeValue(head);
         /* The following functions do different service checks on the client.
          * The protocol is that they return non-zero if the client was
          * terminated. */
+        /// 查看client是否超时
         if (clientsCronHandleTimeout(c)) continue;
+        /// 查看是否需要将client的querybuf剩余空间释放
         if (clientsCronResizeQueryBuffer(c)) continue;
     }
 }
@@ -1071,9 +1089,11 @@ void clientsCron(void) {
 /* This function handles 'background' operations we are required to do
  * incrementally in Redis databases, such as active key expiring, resizing,
  * rehashing. */
+/// 数据库周期处理函数:处理expired keys 进行resize和rehash 
 void databasesCron(void) {
     /* Expire keys by random sampling. Not required for slaves
      * as master will synthesize DELs for us. */
+    /// 如果不是slave,进行expired key的处理
     if (server.active_expire_enabled && server.masterhost == NULL)
         activeExpireCycle(ACTIVE_EXPIRE_CYCLE_SLOW);
 
@@ -1084,6 +1104,7 @@ void databasesCron(void) {
         /* We use global counters so if we stop the computation at a given
          * DB we'll be able to start from the successive in the next
          * cron loop iteration. */
+        /// resize_db rehash_db 全都是static变量,保存上一次进行的数据库id
         static unsigned int resize_db = 0;
         static unsigned int rehash_db = 0;
         int dbs_per_call = REDIS_DBCRON_DBS_PER_CALL;
@@ -1094,15 +1115,19 @@ void databasesCron(void) {
 
         /* Resize */
         for (j = 0; j < dbs_per_call; j++) {
+            /// 尝试进行resize(缩小操作)
             tryResizeHashTables(resize_db % server.dbnum);
             resize_db++;
         }
 
         /* Rehash */
+        /// 如果允许rehash
         if (server.activerehashing) {
             for (j = 0; j < dbs_per_call; j++) {
+                /// 尝试进行rehash
                 int work_done = incrementallyRehash(rehash_db % server.dbnum);
                 rehash_db++;
+                /// 只要有一个id的数据库完成了,就退出本次循环,下次再来
                 if (work_done) {
                     /* If the function did some work, stop here, we'll do
                      * more at the next cron loop. */
@@ -1117,8 +1142,11 @@ void databasesCron(void) {
  * virtual memory and aging there is to store the current time in objects at
  * every object access, and accuracy is not needed. To access a global var is
  * a lot faster than calling time(NULL) */
+/// 更新redis-server的时间
 void updateCachedTime(void) {
+    /// 时间戳
     server.unixtime = time(NULL);
+    /// ms
     server.mstime = mstime();
 }
 
@@ -1152,6 +1180,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     if (server.watchdog_period) watchdogScheduleSignal(server.watchdog_period);
 
     /* Update the time cache. */
+    /// 更新redis-server持有的缓存时间
     updateCachedTime();
 
     run_with_period(100) {
