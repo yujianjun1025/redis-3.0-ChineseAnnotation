@@ -305,7 +305,7 @@ int startAppendOnly(void) {
  * However if force is set to 1 we'll write regardless of the background
  * fsync. */
 #define AOF_WRITE_LOG_ERROR_RATE 30 /* Seconds between errors logging. */
-/// 将aof buf中剩余的内容写入aof文件,并flush系统的write stream cache,force 表示牵制执行
+/// 将aof buf中剩余的内容写入aof文件,并flush系统的write stream cache,force 表示强制执行
 void flushAppendOnlyFile(int force) {
     ssize_t nwritten;
     int sync_in_progress = 0;

@@ -1169,6 +1169,9 @@ void updateCachedTime(void) {
  * a macro is used: run_with_period(milliseconds) { .... }
  */
 
+/// run_with_period(ms)保证以最接近1/ms的频率进行调用
+/// redis-server的周期函数,返回1000ms/server.hz
+/// 具体看代码里注释,做的工作有点多了
 int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     int j;
     REDIS_NOTUSED(eventLoop);
@@ -1184,9 +1187,12 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     updateCachedTime();
 
     run_with_period(100) {
+        /// 统计命令数
         trackInstantaneousMetric(REDIS_METRIC_COMMAND,server.stat_numcommands);
+        /// 统计网络流量RX
         trackInstantaneousMetric(REDIS_METRIC_NET_INPUT,
                 server.stat_net_input_bytes);
+        /// 统计网络流量TX
         trackInstantaneousMetric(REDIS_METRIC_NET_OUTPUT,
                 server.stat_net_output_bytes);
     }
@@ -1205,6 +1211,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     server.lruclock = getLRUClock();
 
     /* Record the max memory used since the server was started. */
+    /// 更新内存最大峰值
     if (zmalloc_used_memory() > server.stat_peak_memory)
         server.stat_peak_memory = zmalloc_used_memory();
 
@@ -1213,13 +1220,21 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
 
     /* We received a SIGTERM, shutting down here in a safe way, as it is
      * not ok doing so inside the signal handler. */
+    /// 接收到SIGTERM信号,要求关闭redis-server
     if (server.shutdown_asap) {
-        if (prepareForShutdown(0) == REDIS_OK) exit(0);
+        /// 准备关闭成功
+        if (prepareForShutdown(0) == REDIS_OK) 
+        {
+            exit(0);
+        }
+        
+        /// 关闭失败,记录日志
         redisLog(REDIS_WARNING,"SIGTERM received but errors trying to shut down the server, check the logs for more information");
         server.shutdown_asap = 0;
     }
 
     /* Show some info about non-empty databases */
+    /// 每5s记录调试信息:关于非空的数据库的used,expired,size等信息
     run_with_period(5000) {
         for (j = 0; j < server.dbnum; j++) {
             long long size, used, vkeys;
@@ -1235,6 +1250,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     }
 
     /* Show information about connected clients */
+    /// 如果不是处在sentinel_mode,则每5s记录一些关于client以及使用的内存数日志
     if (!server.sentinel_mode) {
         run_with_period(5000) {
             redisLog(REDIS_VERBOSE,
@@ -1246,13 +1262,16 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     }
 
     /* We need to do a few operations on clients asynchronously. */
+    /// 调用client的周期函数:主要是查看client是否太闲超时/回收一些不必要的空间
     clientsCron();
 
     /* Handle background operations on Redis databases. */
+    /// 调用数据库的周期函数:主要处理expired/resize/rehash
     databasesCron();
 
     /* Start a scheduled AOF rewrite if this was requested by the user while
      * a BGSAVE was in progress. */
+    /// 如果没有aof/rdb子进程且指定了aof_rewrite_scheduled,fork一个子进程用于rewrite aof
     if (server.rdb_child_pid == -1 && server.aof_child_pid == -1 &&
         server.aof_rewrite_scheduled)
     {
@@ -1264,66 +1283,81 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
         int statloc;
         pid_t pid;
 
+        /// 等待所有的子进程状态变化,WNOHANG表示如果没有子进程,那么立即返回,pid = 状态变化的子进程id
         if ((pid = wait3(&statloc,WNOHANG,NULL)) != 0) {
+            /// 得到退出返回值
             int exitcode = WEXITSTATUS(statloc);
             int bysignal = 0;
 
+            /// 得到退出信号量
             if (WIFSIGNALED(statloc)) bysignal = WTERMSIG(statloc);
 
+            /// rdb_child_pid结束
             if (pid == server.rdb_child_pid) {
+                /// 调用rdb完成回调函数
                 backgroundSaveDoneHandler(exitcode,bysignal);
-            } else if (pid == server.aof_child_pid) {
+            } else if (pid == server.aof_child_pid) { /// aof_child_pid结束
+                /// 调用aof完成回调函数
                 backgroundRewriteDoneHandler(exitcode,bysignal);
-            } else {
+            } else { /// 得到了莫名其妙的pid,记录日志
                 redisLog(REDIS_WARNING,
                     "Warning, detected child with unmatched pid: %ld",
                     (long)pid);
             }
+            /// 更新resize开关
             updateDictResizePolicy();
         }
     } else {
         /* If there is not a background saving/rewrite in progress check if
          * we have to save/rewrite now */
-         for (j = 0; j < server.saveparamslen; j++) {
-            struct saveparam *sp = server.saveparams+j;
+        
+        /// 进行XX秒写入超过XXX就进行rdb save的规则检查并执行
+        for (j = 0; j < server.saveparamslen; j++) {
+           struct saveparam *sp = server.saveparams+j;
 
-            /* Save if we reached the given amount of changes,
-             * the given amount of seconds, and if the latest bgsave was
-             * successful or if, in case of an error, at least
-             * REDIS_BGSAVE_RETRY_DELAY seconds already elapsed. */
-            if (server.dirty >= sp->changes &&
-                server.unixtime-server.lastsave > sp->seconds &&
-                (server.unixtime-server.lastbgsave_try >
-                 REDIS_BGSAVE_RETRY_DELAY ||
-                 server.lastbgsave_status == REDIS_OK))
-            {
-                redisLog(REDIS_NOTICE,"%d changes in %d seconds. Saving...",
-                    sp->changes, (int)sp->seconds);
-                rdbSaveBackground(server.rdb_filename);
-                break;
-            }
-         }
+           /* Save if we reached the given amount of changes,
+            * the given amount of seconds, and if the latest bgsave was
+            * successful or if, in case of an error, at least
+            * REDIS_BGSAVE_RETRY_DELAY seconds already elapsed. */
+           if (server.dirty >= sp->changes &&
+               server.unixtime-server.lastsave > sp->seconds &&
+               (server.unixtime-server.lastbgsave_try >
+                REDIS_BGSAVE_RETRY_DELAY ||
+                server.lastbgsave_status == REDIS_OK))
+           {
+               redisLog(REDIS_NOTICE,"%d changes in %d seconds. Saving...",
+                   sp->changes, (int)sp->seconds);
+               rdbSaveBackground(server.rdb_filename);
+               break;
+           }
+        }
 
-         /* Trigger an AOF rewrite if needed */
-         if (server.rdb_child_pid == -1 &&
-             server.aof_child_pid == -1 &&
-             server.aof_rewrite_perc &&
-             server.aof_current_size > server.aof_rewrite_min_size)
-         {
-            long long base = server.aof_rewrite_base_size ?
-                            server.aof_rewrite_base_size : 1;
-            long long growth = (server.aof_current_size*100/base) - 100;
-            if (growth >= server.aof_rewrite_perc) {
-                redisLog(REDIS_NOTICE,"Starting automatic rewriting of AOF on %lld%% growth",growth);
-                rewriteAppendOnlyFileBackground();
-            }
-         }
+        /* Trigger an AOF rewrite if needed */
+        /// 判断是否需要进行一次AOF重写
+        if (server.rdb_child_pid == -1 &&
+            server.aof_child_pid == -1 &&
+            server.aof_rewrite_perc &&
+            server.aof_current_size > server.aof_rewrite_min_size)
+        {
+           long long base = server.aof_rewrite_base_size ?
+                           server.aof_rewrite_base_size : 1;
+           long long growth = (server.aof_current_size*100/base) - 100;
+           /// 增长速率超过了我们指定的aof_rewrite_perc,进行一次aof重写
+           if (growth >= server.aof_rewrite_perc) {
+               redisLog(REDIS_NOTICE,"Starting automatic rewriting of AOF on %lld%% growth",growth);
+               rewriteAppendOnlyFileBackground();
+           }
+        }
     }
 
 
     /* AOF postponed flush: Try at every cron cycle if the slow fsync
      * completed. */
-    if (server.aof_flush_postponed_start) flushAppendOnlyFile(0);
+    /// flushappendonlyfile这个还得好好看看,有点乱了????????
+    if (server.aof_flush_postponed_start) 
+    {
+        flushAppendOnlyFile(0);
+    }
 
     /* AOF write errors: in this case we have a buffer to flush as well and
      * clear the AOF error in case of success to make the DB writable again,
@@ -1335,11 +1369,14 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     }
 
     /* Close clients that need to be closed asynchronous */
+    /// 把异步关闭client列表中的client关闭
     freeClientsInAsyncFreeQueue();
 
     /* Clear the paused clients flag if needed. */
+    /// 处理暂停时间到了的客户端
     clientsArePaused(); /* Don't check return value, just use the side effect. */
 
+    /// ???????? 下面的关于master-slave cluster的,先不看
     /* Replication cron function -- used to reconnect to master and
      * to detect transfer failures. */
     run_with_period(1000) replicationCron();
@@ -1358,7 +1395,9 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     run_with_period(1000) {
         migrateCloseTimedoutSockets();
     }
+    /// ???????? 下面的关于master-slave cluster的,先不看
 
+    /// serverCron运行次数+1
     server.cronloops++;
     return 1000/server.hz;
 }

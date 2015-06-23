@@ -392,6 +392,11 @@ typedef long long mstime_t; /* millisecond time type. */
 /* Using the following macro you can run code inside serverCron() with the
  * specified period, specified in milliseconds.
  * The actual resolution depends on server.hz. */
+/// server.cronloops,这个变量记录了server.cron运行的次数
+/// 假设server.hz为50Hz,即20ms(1000/server.hz)运行一次
+/// 那么判断条件:(1) _ms_ <= 1000/server.hz频率高于server.hz,直接放行
+///              (2) _ms_ > 1000/server.hz, (_ms_)/(1000/server.hz) > 1
+///                  假设_ms_ = 200ms,200/50=4,当server.cronloops % 4 == 0时才会进入一次调用
 #define run_with_period(_ms_) if ((_ms_ <= 1000/server.hz) || !(server.cronloops%((_ms_)/(1000/server.hz))))
 
 /* We can print the stacktrace, so our assert is defined this way: */
@@ -560,6 +565,7 @@ typedef struct redisClient {
     char buf[REDIS_REPLY_CHUNK_BYTES];
 } redisClient;
 
+/// 表示多少秒内变化了多少
 struct saveparam {
     time_t seconds;
     int changes;
