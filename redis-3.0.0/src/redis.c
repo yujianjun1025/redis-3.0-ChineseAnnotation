@@ -1405,6 +1405,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
 /* This function gets called every time Redis is entering the
  * main loop of the event driven library, that is, before to sleep
  * for ready file descriptors. */
+/// 在每次进入eventLoop之前调用
 void beforeSleep(struct aeEventLoop *eventLoop) {
     REDIS_NOTUSED(eventLoop);
 
@@ -1412,15 +1413,18 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
      * may change the state of Redis Cluster (from ok to fail or vice versa),
      * so it's a good idea to call it before serving the unblocked clients
      * later in this function. */
+    /// redis集群
     if (server.cluster_enabled) clusterBeforeSleep();
 
     /* Run a fast expire cycle (the called function will return
      * ASAP if a fast cycle is not needed). */
+    /// expired快速处理
     if (server.active_expire_enabled && server.masterhost == NULL)
         activeExpireCycle(ACTIVE_EXPIRE_CYCLE_FAST);
 
     /* Send all the slaves an ACK request if at least one client blocked
      * during the previous event loop iteration. */
+    /// master slave相关的 ????????
     if (server.get_ack_from_slaves) {
         robj *argv[3];
 
@@ -1444,11 +1448,13 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
         processUnblockedClients();
 
     /* Write the AOF buffer on disk */
+    /// 刷新AOF文件
     flushAppendOnlyFile(0);
 }
 
 /* =========================== Server initialization ======================== */
 
+/// 创建redis-server共享的obj
 void createSharedObjects(void) {
     int j;
 
@@ -1539,15 +1545,16 @@ void createSharedObjects(void) {
     shared.maxstring = createStringObject("maxstring",9);
 }
 
+/// 初始化redis-server的配置
 void initServerConfig(void) {
     int j;
 
     getRandomHexChars(server.runid,REDIS_RUN_ID_SIZE);
     server.configfile = NULL;
-    server.hz = REDIS_DEFAULT_HZ;
+    server.hz = REDIS_DEFAULT_HZ; /// 默认频率10Hz
     server.runid[REDIS_RUN_ID_SIZE] = '\0';
     server.arch_bits = (sizeof(long) == 8) ? 64 : 32;
-    server.port = REDIS_SERVERPORT;
+    server.port = REDIS_SERVERPORT; /// 默认端口6379
     server.tcp_backlog = REDIS_TCP_BACKLOG;
     server.bindaddr_count = 0;
     server.unixsocket = NULL;
@@ -1628,8 +1635,11 @@ void initServerConfig(void) {
     server.lruclock = getLRUClock();
     resetServerSaveParams();
 
+    /// 一个小时内变化1次
     appendServerSaveParams(60*60,1);  /* save after 1 hour and 1 change */
+    /// 5分钟内变化100次
     appendServerSaveParams(300,100);  /* save after 5 minutes and 100 changes */
+    /// 1分钟内变化10000次
     appendServerSaveParams(60,10000); /* save after 1 minute and 10000 changes */
     /* Replication related */
     server.masterauth = NULL;
@@ -1663,6 +1673,7 @@ void initServerConfig(void) {
         server.client_obuf_limits[j] = clientBufferLimitsDefaults[j];
 
     /* Double constants initialization */
+    /// 居然可以这么玩~
     R_Zero = 0.0;
     R_PosInf = 1.0/R_Zero;
     R_NegInf = -1.0/R_Zero;
@@ -1674,6 +1685,7 @@ void initServerConfig(void) {
     server.commands = dictCreate(&commandTableDictType,NULL);
     server.orig_commands = dictCreate(&commandTableDictType,NULL);
     populateCommandTable();
+    /// redis-server常用的几个命令
     server.delCommand = lookupCommandByCString("del");
     server.multiCommand = lookupCommandByCString("multi");
     server.lpushCommand = lookupCommandByCString("lpush");
@@ -1703,19 +1715,24 @@ void initServerConfig(void) {
  * If it will not be possible to set the limit accordingly to the configured
  * max number of clients, the function will do the reverse setting
  * server.maxclients to the value that we can actually handle. */
+/// 调整文件描述符打开的限制
 void adjustOpenFilesLimit(void) {
+    /// maxfiles,redis-serverr预期的最大描述符个数(RESERVED:保留)
     rlim_t maxfiles = server.maxclients+REDIS_MIN_RESERVED_FDS;
     struct rlimit limit;
 
+    /// 获取limit失败
     if (getrlimit(RLIMIT_NOFILE,&limit) == -1) {
         redisLog(REDIS_WARNING,"Unable to obtain the current NOFILE limit (%s), assuming 1024 and setting the max clients configuration accordingly.",
             strerror(errno));
+        /// 假设最大可打开描述符为1024
         server.maxclients = 1024-REDIS_MIN_RESERVED_FDS;
     } else {
         rlim_t oldlimit = limit.rlim_cur;
 
         /* Set the max number of files if the current limit is not enough
          * for our needs. */
+        /// 当前的limit并不满足我们的文件描述符需求,尝试进行调整
         if (oldlimit < maxfiles) {
             rlim_t bestlimit;
             int setrlimit_error = 0;
@@ -1728,6 +1745,7 @@ void adjustOpenFilesLimit(void) {
 
                 limit.rlim_cur = bestlimit;
                 limit.rlim_max = bestlimit;
+                /// setlimit成功,返回
                 if (setrlimit(RLIMIT_NOFILE,&limit) != -1) break;
                 setrlimit_error = errno;
 
@@ -1741,9 +1759,11 @@ void adjustOpenFilesLimit(void) {
              * our last try was even lower. */
             if (bestlimit < oldlimit) bestlimit = oldlimit;
 
+            /// 调整后无法达到maxfiles,只能仍然保留REDIS_MIN_RESERVED_FDS个描述符,通过减少客户端的个数来妥协
             if (bestlimit < maxfiles) {
                 int old_maxclients = server.maxclients;
                 server.maxclients = bestlimit-REDIS_MIN_RESERVED_FDS;
+                /// maxclients不足1,那么退出redis
                 if (server.maxclients < 1) {
                     redisLog(REDIS_WARNING,"Your current 'ulimit -n' "
                         "of %llu is not enough for Redis to start. "
@@ -1753,6 +1773,7 @@ void adjustOpenFilesLimit(void) {
                         (unsigned long long) maxfiles);
                     exit(1);
                 }
+
                 redisLog(REDIS_WARNING,"You requested maxclients of %d "
                     "requiring at least %llu max file descriptors.",
                     old_maxclients,
