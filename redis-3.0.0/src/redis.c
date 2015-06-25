@@ -1798,6 +1798,7 @@ void adjustOpenFilesLimit(void) {
 
 /* Check that server.tcp_backlog can be actually enforced in Linux according
  * to the value of /proc/sys/net/core/somaxconn, or warn about it. */
+/// 检查系统的TCP BAKCLOP设置是否比server.tcp_backlog大,只有满足这个条件,我们才能调整server.tcp_backlog
 void checkTcpBacklogSettings(void) {
 #ifdef HAVE_PROC_SOMAXCONN
     FILE *fp = fopen("/proc/sys/net/core/somaxconn","r");
@@ -1831,41 +1832,59 @@ void checkTcpBacklogSettings(void) {
  * impossible to bind, or no bind addresses were specified in the server
  * configuration but the function is not able to bind * for at least
  * one of the IPv4 or IPv6 protocols. */
+/// 创建在port上监听的描述符,将描述符保存在fds中,描述符个数保存在count中
 int listenToPort(int port, int *fds, int *count) {
     int j;
 
     /* Force binding of 0.0.0.0 if no bind address is specified, always
      * entering the loop if j == 0. */
-    if (server.bindaddr_count == 0) server.bindaddr[0] = NULL;
+
+    /// 没有指定server绑定哪个地址,那么就强制绑定0.0.0.0在port上(IPv6 & Ipv4)
+    if (server.bindaddr_count == 0) 
+    {
+        server.bindaddr[0] = NULL;
+    }
+
     for (j = 0; j < server.bindaddr_count || j == 0; j++) {
+        /// 没有指定任何的绑定地址
         if (server.bindaddr[j] == NULL) {
             /* Bind * for both IPv6 and IPv4, we enter here only if
              * server.bindaddr_count == 0. */
+            /// IPv6
+            /// 创建一个IPv6监听地址的redis-server
             fds[*count] = anetTcp6Server(server.neterr,port,NULL,
                 server.tcp_backlog);
             if (fds[*count] != ANET_ERR) {
                 anetNonBlock(NULL,fds[*count]);
                 (*count)++;
             }
+
+            /// IPv4
+            /// 创建一个IPv4监听地址的redis-server
             fds[*count] = anetTcpServer(server.neterr,port,NULL,
                 server.tcp_backlog);
             if (fds[*count] != ANET_ERR) {
                 anetNonBlock(NULL,fds[*count]);
                 (*count)++;
             }
+
             /* Exit the loop if we were able to bind * on IPv4 or IPv6,
              * otherwise fds[*count] will be ANET_ERR and we'll print an
              * error and return to the caller with an error. */
-            if (*count) break;
-        } else if (strchr(server.bindaddr[j],':')) {
+            /// 我们没有指定地址,强制绑定到0.0.0.0后就退出
+            if (*count) 
+                break;
+        } else if (strchr(server.bindaddr[j],':')) { /// 说明我们绑定的地址是IPv6地址
             /* Bind IPv6 address. */
             fds[*count] = anetTcp6Server(server.neterr,port,server.bindaddr[j],
                 server.tcp_backlog);
-        } else {
+        } else { /// 我们绑定的是IPv4地址
             /* Bind IPv4 address. */
             fds[*count] = anetTcpServer(server.neterr,port,server.bindaddr[j],
                 server.tcp_backlog);
         }
+
+        /// 创建listen描述符失败
         if (fds[*count] == ANET_ERR) {
             redisLog(REDIS_WARNING,
                 "Creating Server TCP listening socket %s:%d: %s",
@@ -1882,6 +1901,7 @@ int listenToPort(int port, int *fds, int *count) {
 /* Resets the stats that we expose via INFO or other means that we want
  * to reset via CONFIG RESETSTAT. The function is also used in order to
  * initialize these fields in initServer() at server startup. */
+/// 重置server状态值为初始状态,如执行过的命令数,网络IO字节数等
 void resetServerStats(void) {
     int j;
 
@@ -1911,15 +1931,18 @@ void resetServerStats(void) {
 void initServer(void) {
     int j;
 
+    /// 忽略SIGHUP和SIGPIPE
     signal(SIGHUP, SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
     setupSignalHandlers();
 
+    /// 如果允许syslog,那么将其打开(初始化)
     if (server.syslog_enabled) {
         openlog(server.syslog_ident, LOG_PID | LOG_NDELAY | LOG_NOWAIT,
             server.syslog_facility);
     }
 
+    /// 创建一些必要的项
     server.pid = getpid();
     server.current_client = NULL;
     server.clients = listCreate();
@@ -1939,15 +1962,18 @@ void initServer(void) {
     server.db = zmalloc(sizeof(redisDb)*server.dbnum);
 
     /* Open the TCP listening socket for the user commands. */
+    /// 如果监听端口失败,退出redis-server
     if (server.port != 0 &&
         listenToPort(server.port,server.ipfd,&server.ipfd_count) == REDIS_ERR)
         exit(1);
 
     /* Open the listening Unix domain socket. */
+    /// 创建UNIX域socket
     if (server.unixsocket != NULL) {
         unlink(server.unixsocket); /* don't care if this fails */
         server.sofd = anetUnixServer(server.neterr,server.unixsocket,
             server.unixsocketperm, server.tcp_backlog);
+        /// 在unix域socket中监听端口失败,退出redis-server
         if (server.sofd == ANET_ERR) {
             redisLog(REDIS_WARNING, "Opening Unix socket: %s", server.neterr);
             exit(1);
@@ -1956,12 +1982,14 @@ void initServer(void) {
     }
 
     /* Abort if there are no listening sockets at all. */
+    /// 没有监听的fd,退出redis-server
     if (server.ipfd_count == 0 && server.sofd < 0) {
         redisLog(REDIS_WARNING, "Configured to not listen anywhere, exiting.");
         exit(1);
     }
 
     /* Create the Redis databases, and initialize other internal state. */
+    /// 创建redis db
     for (j = 0; j < server.dbnum; j++) {
         server.db[j].dict = dictCreate(&dbDictType,NULL);
         server.db[j].expires = dictCreate(&keyptrDictType,NULL);
@@ -1972,6 +2000,8 @@ void initServer(void) {
         server.db[j].id = j;
         server.db[j].avg_ttl = 0;
     }
+
+    /// 进行redis-server的各种变量的创建
     server.pubsub_channels = dictCreate(&keylistDictType,NULL);
     server.pubsub_patterns = listCreate();
     listSetFreeMethod(server.pubsub_patterns,freePubsubPattern);
@@ -2000,6 +2030,7 @@ void initServer(void) {
 
     /* Create the serverCron() time event, that's our main way to process
      * background operations. */
+    /// 创建serverCron周期调用函数,1ms调用一次,如果创建失败,退出redis-server
     if(aeCreateTimeEvent(server.el, 1, serverCron, NULL, NULL) == AE_ERR) {
         redisPanic("Can't create the serverCron time event.");
         exit(1);
@@ -2007,6 +2038,7 @@ void initServer(void) {
 
     /* Create an event handler for accepting new connections in TCP and Unix
      * domain sockets. */
+    /// 在各个监听描述符上创建accept事件
     for (j = 0; j < server.ipfd_count; j++) {
         if (aeCreateFileEvent(server.el, server.ipfd[j], AE_READABLE,
             acceptTcpHandler,NULL) == AE_ERR)
@@ -2015,13 +2047,17 @@ void initServer(void) {
                     "Unrecoverable error creating server.ipfd file event.");
             }
     }
+    
+    /// 在unix域socket上创建accept事件
     if (server.sofd > 0 && aeCreateFileEvent(server.el,server.sofd,AE_READABLE,
         acceptUnixHandler,NULL) == AE_ERR) redisPanic("Unrecoverable error creating server.sofd file event.");
 
     /* Open the AOF file if needed. */
+    /// 如果指定了要AOF,那么打开AOF文件
     if (server.aof_state == REDIS_AOF_ON) {
         server.aof_fd = open(server.aof_filename,
                                O_WRONLY|O_APPEND|O_CREAT,0644);
+        /// 打开AOF失败则退出
         if (server.aof_fd == -1) {
             redisLog(REDIS_WARNING, "Can't open the append-only file: %s",
                 strerror(errno));
@@ -2033,22 +2069,33 @@ void initServer(void) {
      * no explicit limit in the user provided configuration we set a limit
      * at 3 GB using maxmemory with 'noeviction' policy'. This avoids
      * useless crashes of the Redis instance for out of memory. */
+    /// 如果是32位系统,物理内存最多为4G
     if (server.arch_bits == 32 && server.maxmemory == 0) {
         redisLog(REDIS_WARNING,"Warning: 32 bit instance detected but no memory limit set. Setting 3 GB maxmemory limit with 'noeviction' policy now.");
+        /// 设置redis-server最大内存为3G
         server.maxmemory = 3072LL*(1024*1024); /* 3 GB */
+        /// 淘汰策略为不回收
         server.maxmemory_policy = REDIS_MAXMEMORY_NO_EVICTION;
     }
 
-    if (server.cluster_enabled) clusterInit();
+    /// 如果在集群模式
+    if (server.cluster_enabled) 
+    {
+        clusterInit();
+    }
+
     replicationScriptCacheInit();
     scriptingInit();
     slowlogInit();
     latencyMonitorInit();
+    /// 为什么要初始化BIO????????
     bioInit();
 }
 
 /* Populates the Redis Command Table starting from the hard coded list
  * we have on top of redis.c file. */
+/// populate:填入
+/// 将redisCommandTable中的命令及其执行函数等填入到server.commands中 
 void populateCommandTable(void) {
     int j;
     int numcommands = sizeof(redisCommandTable)/sizeof(struct redisCommand);
@@ -2058,6 +2105,7 @@ void populateCommandTable(void) {
         char *f = c->sflags;
         int retval1, retval2;
 
+        /// 将命令的描述性flag转为flag位
         while(*f != '\0') {
             switch(*f) {
             case 'w': c->flags |= REDIS_CMD_WRITE; break;
@@ -2078,14 +2126,17 @@ void populateCommandTable(void) {
             f++;
         }
 
+        /// 将命令添加到server.commands中
         retval1 = dictAdd(server.commands, sdsnew(c->name), c);
         /* Populate an additional dictionary that will be unaffected
          * by rename-command statements in redis.conf. */
+        /// 将命令添加到server.orig_commands中,命令可以被重命名????????
         retval2 = dictAdd(server.orig_commands, sdsnew(c->name), c);
         redisAssert(retval1 == DICT_OK && retval2 == DICT_OK);
     }
 }
 
+/// 重新设置command的microseconds,calls为0
 void resetCommandTableStats(void) {
     int numcommands = sizeof(redisCommandTable)/sizeof(struct redisCommand);
     int j;
@@ -2093,8 +2144,8 @@ void resetCommandTableStats(void) {
     for (j = 0; j < numcommands; j++) {
         struct redisCommand *c = redisCommandTable+j;
 
-        c->microseconds = 0;
-        c->calls = 0;
+        c->microseconds = 0; /// 一次调用所用的时间ms
+        c->calls = 0; /// 该命令被调用的次数
     }
 }
 
