@@ -795,7 +795,7 @@ struct redisServer {
     int rdb_pipe_write_result_to_parent; /* RDB pipes used to return the state */
     int rdb_pipe_read_result_from_child; /* of each slave in diskless SYNC. */
     /* Propagation of commands in AOF / replication */
-    redisOpArray also_propagate;    /* Additional command to propagate. */
+    redisOpArray also_propagate;    /* Additional command to propagate. */ /// Additional:附加的
     /* Logging */
     char *logfile;                  /* Path of log file */
     int syslog_enabled;             /* Is syslog enabled? */
@@ -925,7 +925,7 @@ typedef int *redisGetKeysProc(struct redisCommand *cmd, robj **argv, int argc, i
 struct redisCommand {
     char *name;
     redisCommandProc *proc; /// 执行cmd的函数
-    int arity;
+    int arity; /// 参数数量
     char *sflags; /* Flags as string representation, one char per flag. */
     int flags;    /* The actual flags, obtained from the 'sflags' field. */
     /* Use a function to determine keys arguments in a command line.

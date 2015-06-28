@@ -2151,17 +2151,21 @@ void resetCommandTableStats(void) {
 
 /* ========================== Redis OP Array API ============================ */
 
+/// 初始化redisOpArray结构体:初始状态为无命令
 void redisOpArrayInit(redisOpArray *oa) {
     oa->ops = NULL;
     oa->numops = 0;
 }
 
+/// 将命令cmd(目标dbid,参数argc个,参数为argv)添加到oa中,返回oa中命令个数
 int redisOpArrayAppend(redisOpArray *oa, struct redisCommand *cmd, int dbid,
                        robj **argv, int argc, int target)
 {
     redisOp *op;
 
+    /// 多分配一个空间给即将Append的命令
     oa->ops = zrealloc(oa->ops,sizeof(redisOp)*(oa->numops+1));
+
     op = oa->ops+oa->numops;
     op->cmd = cmd;
     op->dbid = dbid;
@@ -2172,6 +2176,7 @@ int redisOpArrayAppend(redisOpArray *oa, struct redisCommand *cmd, int dbid,
     return oa->numops;
 }
 
+/// 将oa释放
 void redisOpArrayFree(redisOpArray *oa) {
     while(oa->numops) {
         int j;
@@ -2188,10 +2193,12 @@ void redisOpArrayFree(redisOpArray *oa) {
 
 /* ====================== Commands lookup and execution ===================== */
 
+/// 查找名为name的redis命令
 struct redisCommand *lookupCommand(sds name) {
     return dictFetchValue(server.commands, name);
 }
 
+/// 根据c风格字符串s查找redis命令
 struct redisCommand *lookupCommandByCString(char *s) {
     struct redisCommand *cmd;
     sds name = sdsnew(s);
@@ -2208,10 +2215,15 @@ struct redisCommand *lookupCommandByCString(char *s) {
  * This is used by functions rewriting the argument vector such as
  * rewriteClientCommandVector() in order to set client->cmd pointer
  * correctly even if the command was renamed. */
+/// 查找名为name的redis命令(从server.commands和server.orig_commands中)
 struct redisCommand *lookupCommandOrOriginal(sds name) {
     struct redisCommand *cmd = dictFetchValue(server.commands, name);
 
-    if (!cmd) cmd = dictFetchValue(server.orig_commands,name);
+    if (!cmd) 
+    {
+        cmd = dictFetchValue(server.orig_commands,name);
+    }
+
     return cmd;
 }
 
@@ -2223,6 +2235,7 @@ struct redisCommand *lookupCommandOrOriginal(sds name) {
  * + REDIS_PROPAGATE_AOF (propagate into the AOF file if is enabled)
  * + REDIS_PROPAGATE_REPL (propagate into the replication link)
  */
+/// 根据flag以及redis-server设置,将cmd传递到aof和slave中
 void propagate(struct redisCommand *cmd, int dbid, robj **argv, int argc,
                int flags)
 {
@@ -2234,6 +2247,7 @@ void propagate(struct redisCommand *cmd, int dbid, robj **argv, int argc,
 
 /* Used inside commands to schedule the propagation of additional commands
  * after the current command is propagated to AOF / Replication. */
+/// 将命令写入到server.also_propagate中,这是一个redisOpArray...这个函数没有任何地方调用...
 void alsoPropagate(struct redisCommand *cmd, int dbid, robj **argv, int argc,
                    int target)
 {
@@ -2243,32 +2257,39 @@ void alsoPropagate(struct redisCommand *cmd, int dbid, robj **argv, int argc,
 /* It is possible to call the function forceCommandPropagation() inside a
  * Redis command implementation in order to to force the propagation of a
  * specific command execution into AOF / Replication. */
+/// 如果client有REDIS_PROPAGATE_XXX命令,强制将其改为REDIS_FORCE_XXX(目的应该是保证每一次执行命令都会传递到AOF和REPL中)
 void forceCommandPropagation(redisClient *c, int flags) {
     if (flags & REDIS_PROPAGATE_REPL) c->flags |= REDIS_FORCE_REPL;
     if (flags & REDIS_PROPAGATE_AOF) c->flags |= REDIS_FORCE_AOF;
 }
 
 /* Call() is the core of Redis execution of a command */
+/// redis执行命令的函数,根据flags进行细分操作
 void call(redisClient *c, int flags) {
     long long dirty, start, duration;
     int client_old_flags = c->flags;
 
     /* Sent the command to clients in MONITOR mode, only if the commands are
      * not generated from reading an AOF. */
+    /// 如果这个redis-server有monitors且命令标志不为REDIS_CMD_SKIP_MONITOR和REDIS_CMD_ADMIN
     if (listLength(server.monitors) &&
         !server.loading &&
         !(c->cmd->flags & (REDIS_CMD_SKIP_MONITOR|REDIS_CMD_ADMIN)))
     {
+        /// 将命令发送到显示器上面供监视
         replicationFeedMonitors(c,server.monitors,c->db->id,c->argv,c->argc);
     }
 
     /* Call the command. */
+    /// 清空REDIS_FORCE_AOF REDIS_FORCE_REPL这两个标志位
     c->flags &= ~(REDIS_FORCE_AOF|REDIS_FORCE_REPL);
     redisOpArrayInit(&server.also_propagate);
     dirty = server.dirty;
     start = ustime();
+    /// 执行命令
     c->cmd->proc(c);
-    duration = ustime()-start;
+
+    duration = ustime()-start; /// duration:持续时间
     dirty = server.dirty-dirty;
     if (dirty < 0) dirty = 0;
 
@@ -2295,12 +2316,14 @@ void call(redisClient *c, int flags) {
         latencyAddSampleIfNeeded(latency_event,duration/1000);
         slowlogPushEntryIfNeeded(c->argv,c->argc,duration);
     }
+    /// 记录cmd执行的时间等状态
     if (flags & REDIS_CALL_STATS) {
         c->cmd->microseconds += duration;
         c->cmd->calls++;
     }
 
     /* Propagate the command into the AOF and replication link */
+    /// 传递命令
     if (flags & REDIS_CALL_PROPAGATE) {
         int flags = REDIS_PROPAGATE_NONE;
 
@@ -2319,6 +2342,8 @@ void call(redisClient *c, int flags) {
 
     /* Handle the alsoPropagate() API to handle commands that want to propagate
      * multiple separated commands. */
+    /// 将server.also_propagate的命令传播出去(到AOF或者SLAVE中)
+    /// 设计的目的应该在于:执行完一个命令后,要将某个调用传播到AOF或者SLAVE中,但这个版本的redis没有看到类似这样的调用
     if (server.also_propagate.numops) {
         int j;
         redisOp *rop;
@@ -2329,6 +2354,8 @@ void call(redisClient *c, int flags) {
         }
         redisOpArrayFree(&server.also_propagate);
     }
+
+    /// 执行的命令数+1
     server.stat_numcommands++;
 }
 
@@ -2345,22 +2372,23 @@ int processCommand(redisClient *c) {
      * go through checking for replication and QUIT will cause trouble
      * when FORCE_REPLICATION is enabled and would be implemented in
      * a regular command proc. */
+    /// quit不是一个redis命令,只需要置REDIS_CLOSE_AFTER_REPLY标记即可
     if (!strcasecmp(c->argv[0]->ptr,"quit")) {
         addReply(c,shared.ok);
         c->flags |= REDIS_CLOSE_AFTER_REPLY;
-        return REDIS_ERR;
+        return REDIS_ERR; /// 返回REDIS_ERR说明客户端已经死了
     }
 
     /* Now lookup the command and check ASAP about trivial error conditions
      * such as wrong arity, bad command name and so forth. */
     c->cmd = c->lastcmd = lookupCommand(c->argv[0]->ptr);
-    if (!c->cmd) {
+    if (!c->cmd) { /// 未知命令
         flagTransaction(c);
         addReplyErrorFormat(c,"unknown command '%s'",
             (char*)c->argv[0]->ptr);
         return REDIS_OK;
-    } else if ((c->cmd->arity > 0 && c->cmd->arity != c->argc) ||
-               (c->argc < -c->cmd->arity)) {
+    } else if ((c->cmd->arity > 0 && c->cmd->arity != c->argc) || 
+               (c->argc < -c->cmd->arity)) { /// 参数数量错误
         flagTransaction(c);
         addReplyErrorFormat(c,"wrong number of arguments for '%s' command",
             c->cmd->name);
@@ -2368,6 +2396,7 @@ int processCommand(redisClient *c) {
     }
 
     /* Check if the user is authenticated */
+    /// 校验密码失败
     if (server.requirepass && !c->authenticated && c->cmd->proc != authCommand)
     {
         flagTransaction(c);
@@ -2379,6 +2408,7 @@ int processCommand(redisClient *c) {
      * However we don't perform the redirection if:
      * 1) The sender of this command is our master.
      * 2) The command has no key arguments. */
+    /// redis集群相关的,先不看
     if (server.cluster_enabled &&
         !(c->flags & REDIS_MASTER) &&
         !(c->flags & REDIS_LUA_CLIENT &&
@@ -2408,9 +2438,12 @@ int processCommand(redisClient *c) {
      * keys in the dataset). If there are not the only thing we can do
      * is returning an error. */
     if (server.maxmemory) {
+        /// 尝试释放内存,但每个命令都要这样做?freeMemoryIfNeeded函数中,如果内存充足,是否立即返回????????
         int retval = freeMemoryIfNeeded();
+        /// 这个命令会增加内存,且尝试释放内存失败
         if ((c->cmd->flags & REDIS_CMD_DENYOOM) && retval == REDIS_ERR) {
             flagTransaction(c);
+            /// 返回内存达到限制错误
             addReply(c, shared.oomerr);
             return REDIS_OK;
         }
@@ -2418,6 +2451,7 @@ int processCommand(redisClient *c) {
 
     /* Don't accept write commands if there are problems persisting on disk
      * and if this is a master instance. */
+    /// ???????? 这下面的暂时看不懂 ????????
     if (((server.stop_writes_on_bgsave_err &&
           server.saveparamslen > 0 &&
           server.lastbgsave_status == REDIS_ERR) ||
@@ -2504,6 +2538,7 @@ int processCommand(redisClient *c) {
         addReply(c, shared.slowscripterr);
         return REDIS_OK;
     }
+    /// ???????? 这上面的暂时看不懂 ????????
 
     /* Exec the command */
     if (c->flags & REDIS_MULTI &&
@@ -2513,8 +2548,10 @@ int processCommand(redisClient *c) {
         queueMultiCommand(c);
         addReply(c,shared.queued);
     } else {
+        /// 执行命令,之前将各种限制/错误的情况都返回了
         call(c,REDIS_CALL_FULL);
         c->woff = server.master_repl_offset;
+        /// 执行完命令后,可能一些bpop的客户端已经可以返回了
         if (listLength(server.ready_keys))
             handleClientsBlockedOnLists();
     }
@@ -2525,6 +2562,7 @@ int processCommand(redisClient *c) {
 
 /* Close listening sockets. Also unlink the unix domain socket if
  * unlink_unix_socket is non-zero. */
+/// 关闭监听套接字
 void closeListeningSockets(int unlink_unix_socket) {
     int j;
 
@@ -2538,6 +2576,7 @@ void closeListeningSockets(int unlink_unix_socket) {
     }
 }
 
+/// 准备关闭redis-server,返回值说明当前可否关闭
 int prepareForShutdown(int flags) {
     int save = flags & REDIS_SHUTDOWN_SAVE;
     int nosave = flags & REDIS_SHUTDOWN_NOSAVE;
@@ -2546,17 +2585,22 @@ int prepareForShutdown(int flags) {
     /* Kill the saving child if there is a background saving in progress.
        We want to avoid race conditions, for instance our saving child may
        overwrite the synchronous saving did by SHUTDOWN. */
+    /// 如果有rdb子进程
     if (server.rdb_child_pid != -1) {
         redisLog(REDIS_WARNING,"There is a child saving an .rdb. Killing it!");
+        /// 杀掉rdb子进程
         kill(server.rdb_child_pid,SIGUSR1);
+        /// 删除rdb临时文件
         rdbRemoveTempFile(server.rdb_child_pid);
     }
-    if (server.aof_state != REDIS_AOF_OFF) {
+
+    if (server.aof_state != REDIS_AOF_OFF) { /// redis-server打开了AOF
         /* Kill the AOF saving child as the AOF we already have may be longer
          * but contains the full dataset anyway. */
         if (server.aof_child_pid != -1) {
             /* If we have AOF enabled but haven't written the AOF yet, don't
              * shutdown or else the dataset will be lost. */
+            /// AOF正在加载中,这时候不能关闭redis-server
             if (server.aof_state == REDIS_AOF_WAIT_REWRITE) {
                 redisLog(REDIS_WARNING, "Writing initial AOF, can't exit.");
                 return REDIS_ERR;
@@ -2569,9 +2613,12 @@ int prepareForShutdown(int flags) {
         redisLog(REDIS_NOTICE,"Calling fsync() on the AOF file.");
         aof_fsync(server.aof_fd);
     }
+
+    /// 保存rdb文件
     if ((server.saveparamslen > 0 && !nosave) || save) {
         redisLog(REDIS_NOTICE,"Saving the final RDB snapshot before exiting.");
         /* Snapshotting. Perform a SYNC SAVE and exit */
+        /// 保存rdb文件失败,无法退出
         if (rdbSave(server.rdb_filename) != REDIS_OK) {
             /* Ooops.. error saving! The best we can do is to continue
              * operating. Note that if there was a background saving process,
@@ -2582,11 +2629,13 @@ int prepareForShutdown(int flags) {
             return REDIS_ERR;
         }
     }
+    /// 后台运行的redis-server
     if (server.daemonize) {
         redisLog(REDIS_NOTICE,"Removing the pid file.");
         unlink(server.pidfile);
     }
     /* Close the listening sockets. Apparently this allows faster restarts. */
+    /// 关闭监听套接字
     closeListeningSockets(1);
     redisLog(REDIS_WARNING,"%s is now ready to exit, bye bye...",
         server.sentinel_mode ? "Sentinel" : "Redis");
