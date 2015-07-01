@@ -2653,7 +2653,9 @@ int prepareForShutdown(int flags) {
  * can avoid leaking any information about the password length and any
  * possible branch misprediction related leak.
  */
+/// 比对a与b(C风格字符串)是否相同
 int time_independent_strcmp(char *a, char *b) {
+    /// REDIS_AUTHPASS_MAX_LEN:512
     char bufa[REDIS_AUTHPASS_MAX_LEN], bufb[REDIS_AUTHPASS_MAX_LEN];
     /* The above two strlen perform len(a) + len(b) operations where either
      * a or b are fixed (our password) length, and the difference is only
@@ -2667,7 +2669,11 @@ int time_independent_strcmp(char *a, char *b) {
     /* We can't compare strings longer than our static buffers.
      * Note that this will never pass the first test in practical circumstances
      * so there is no info leak. */
-    if (alen > sizeof(bufa) || blen > sizeof(bufb)) return 1;
+    /// 其中有一个字符串长度超过了REDIS_AUTHPASS_MAX_LEN
+    if (alen > sizeof(bufa) || blen > sizeof(bufb)) 
+    {
+        return 1;
+    }
 
     memset(bufa,0,sizeof(bufa));        /* Constant time. */
     memset(bufb,0,sizeof(bufb));        /* Constant time. */
@@ -2678,21 +2684,28 @@ int time_independent_strcmp(char *a, char *b) {
 
     /* Always compare all the chars in the two buffers without
      * conditional expressions. */
+    /// 异或比内容
     for (j = 0; j < sizeof(bufa); j++) {
         diff |= (bufa[j] ^ bufb[j]);
     }
     /* Length must be equal as well. */
+    /// 再异或比长度
     diff |= alen ^ blen;
+
+    /// 返回0,说明匹配
     return diff; /* If zero strings are the same. */
 }
 
+/// AUTH password
+/// 验证密码
 void authCommand(redisClient *c) {
+    /// redis-server没有设置密码
     if (!server.requirepass) {
         addReplyError(c,"Client sent AUTH, but no password is set");
-    } else if (!time_independent_strcmp(c->argv[1]->ptr, server.requirepass)) {
-      c->authenticated = 1;
+    } else if (!time_independent_strcmp(c->argv[1]->ptr, server.requirepass)) { /// 比对密码
+      c->authenticated = 1; /// 表示这个client通过了验证
       addReply(c,shared.ok);
-    } else {
+    } else { /// 密码错误
       c->authenticated = 0;
       addReplyError(c,"invalid password");
     }
@@ -2700,6 +2713,8 @@ void authCommand(redisClient *c) {
 
 /* The PING command. It works in a different way if the client is in
  * in Pub/Sub mode. */
+/// PING
+/// 事实上PING命令的表现并不像这个代码反应出来的????????实际测试PING不能带任何参数
 void pingCommand(redisClient *c) {
     /* The command takes zero or one arguments. */
     if (c->argc > 2) {
@@ -2723,10 +2738,12 @@ void pingCommand(redisClient *c) {
     }
 }
 
+/// ECHO msg:将msg原样返回给客户端
 void echoCommand(redisClient *c) {
     addReplyBulk(c,c->argv[1]);
 }
 
+/// 返回当前时间(tv_sec tv_usec)
 void timeCommand(redisClient *c) {
     struct timeval tv;
 
@@ -2734,32 +2751,41 @@ void timeCommand(redisClient *c) {
      * don't check for errors. */
     gettimeofday(&tv,NULL);
     addReplyMultiBulkLen(c,2);
-    addReplyBulkLongLong(c,tv.tv_sec);
+    addReplyBulkLongLong(c,tv.tv_sec); 
     addReplyBulkLongLong(c,tv.tv_usec);
 }
 
 
 /* Helper function for addReplyCommand() to output flags. */
+
+/// 如果命令cmd带有f这个flag,将reply返回给客户端,并返回1,否则返回0
 int addReplyCommandFlag(redisClient *c, struct redisCommand *cmd, int f, char *reply) {
     if (cmd->flags & f) {
         addReplyStatus(c, reply);
         return 1;
     }
+
     return 0;
 }
 
 /* Output the representation of a Redis command. Used by the COMMAND command. */
+/// 将cmd的名字,参数个数等返回到客户端
 void addReplyCommand(redisClient *c, struct redisCommand *cmd) {
+    /// cmd为空,返回null
     if (!cmd) {
         addReply(c, shared.nullbulk);
     } else {
         /* We are adding: command name, arg count, flags, first, last, offset */
+        /// 有6行的内容要返回
         addReplyMultiBulkLen(c, 6);
+
         addReplyBulkCString(c, cmd->name);
         addReplyLongLong(c, cmd->arity);
 
         int flagcount = 0;
+        /// 预先留出一个返回长度,将来将flagcount填入
         void *flaglen = addDeferredMultiBulkLength(c);
+        /// 如果命令包含REDIS_CMD_XXXX这个位,那么将对应的字符串返回,flagcount+=1
         flagcount += addReplyCommandFlag(c,cmd,REDIS_CMD_WRITE, "write");
         flagcount += addReplyCommandFlag(c,cmd,REDIS_CMD_READONLY, "readonly");
         flagcount += addReplyCommandFlag(c,cmd,REDIS_CMD_DENYOOM, "denyoom");
@@ -2777,6 +2803,7 @@ void addReplyCommand(redisClient *c, struct redisCommand *cmd) {
             addReplyStatus(c, "movablekeys");
             flagcount += 1;
         }
+        /// 将flagcount填入刚才我们创建的待填充返回长度中
         setDeferredMultiBulkLength(c, flaglen, flagcount);
 
         addReplyLongLong(c, cmd->firstkey);
@@ -2786,42 +2813,50 @@ void addReplyCommand(redisClient *c, struct redisCommand *cmd) {
 }
 
 /* COMMAND <subcommand> <args> */
+/// command命令
 void commandCommand(redisClient *c) {
     dictIterator *di;
     dictEntry *de;
 
-    if (c->argc == 1) {
+    if (c->argc == 1) { /// 无参数,将redis-server的所有参数的详情全部返回
         addReplyMultiBulkLen(c, dictSize(server.commands));
         di = dictGetIterator(server.commands);
         while ((de = dictNext(di)) != NULL) {
             addReplyCommand(c, dictGetVal(de));
         }
         dictReleaseIterator(di);
-    } else if (!strcasecmp(c->argv[1]->ptr, "info")) {
+    } else if (!strcasecmp(c->argv[1]->ptr, "info")) { /// command info command1 command2
         int i;
-        addReplyMultiBulkLen(c, c->argc-2);
+        addReplyMultiBulkLen(c, c->argc-2); 
+        /// 将info后面我们指定的命令的详情返回
         for (i = 2; i < c->argc; i++) {
             addReplyCommand(c, dictFetchValue(server.commands, c->argv[i]->ptr));
         }
-    } else if (!strcasecmp(c->argv[1]->ptr, "count") && c->argc == 2) {
+    } else if (!strcasecmp(c->argv[1]->ptr, "count") && c->argc == 2) { /// 返回redis-server的所有命令个数
         addReplyLongLong(c, dictSize(server.commands));
-    } else if (!strcasecmp(c->argv[1]->ptr,"getkeys") && c->argc >= 3) {
+    } else if (!strcasecmp(c->argv[1]->ptr,"getkeys") && c->argc >= 3) { /// command getkeys cmd key1 key2 arg1 arg2 arg3
         struct redisCommand *cmd = lookupCommand(c->argv[2]->ptr);
         int *keys, numkeys, j;
 
+        /// 找不到命令
         if (!cmd) {
             addReplyErrorFormat(c,"Invalid command specified");
             return;
         } else if ((cmd->arity > 0 && cmd->arity != c->argc-2) ||
-                   ((c->argc-2) < -cmd->arity))
+                   ((c->argc-2) < -cmd->arity)) /// 参数个数错误
         {
             addReplyError(c,"Invalid number of arguments specified for command");
             return;
         }
 
+        /// 返回这个命令用到的所有(redis-)key
         keys = getKeysFromCommand(cmd,c->argv+2,c->argc-2,&numkeys);
         addReplyMultiBulkLen(c,numkeys);
-        for (j = 0; j < numkeys; j++) addReplyBulk(c,c->argv[keys[j]+2]);
+        for (j = 0; j < numkeys; j++) 
+        {
+            addReplyBulk(c,c->argv[keys[j]+2]);
+        }
+
         getKeysFreeResult(keys);
     } else {
         addReplyError(c, "Unknown subcommand or wrong number of arguments.");
@@ -2831,6 +2866,7 @@ void commandCommand(redisClient *c) {
 
 /* Convert an amount of bytes into a human readable string in the form
  * of 100B, 2G, 100M, 4K, and so forth. */
+/// 将n字节以人类可以一眼看出的方式打印在s中
 void bytesToHuman(char *s, unsigned long long n) {
     double d;
 
@@ -2862,6 +2898,7 @@ void bytesToHuman(char *s, unsigned long long n) {
 /* Create the string returned by the INFO command. This is decoupled
  * by the INFO command itself as we need to report the same information
  * on memory corruption problems. */
+/// 将redis-server的状态/信息/内存等数据返回,还未细看????????
 sds genRedisInfoString(char *section) {
     sds info = sdsempty();
     time_t uptime = server.unixtime-server.stat_starttime;
@@ -3298,26 +3335,38 @@ sds genRedisInfoString(char *section) {
     return info;
 }
 
+/// INFO [default | all]
+/// 返回redis-server的info
 void infoCommand(redisClient *c) {
+    /// 默认返回所有信息
     char *section = c->argc == 2 ? c->argv[1]->ptr : "default";
 
     if (c->argc > 2) {
         addReply(c,shared.syntaxerr);
         return;
     }
+
+    /// 返回对应的session的信息
     sds info = genRedisInfoString(section);
+    /// 返回sds
     addReplySds(c,sdscatprintf(sdsempty(),"$%lu\r\n",
         (unsigned long)sdslen(info)));
     addReplySds(c,info);
     addReply(c,shared.crlf);
 }
 
+/// 将client设置为monitor
 void monitorCommand(redisClient *c) {
     /* ignore MONITOR if already slave or in monitor mode */
+    /// 已经是REDIS_SLAVE,直接返回
     if (c->flags & REDIS_SLAVE) return;
 
+    /// 要同时设置两个标志位
     c->flags |= (REDIS_SLAVE|REDIS_MONITOR);
+    /// 将client添加到monitors列表中 
     listAddNodeTail(server.monitors,c);
+
+    /// 返回成功,这个client失去了输入的功能,只能查看其它客户端输入的命令
     addReply(c,shared.ok);
 }
 
