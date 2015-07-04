@@ -754,12 +754,12 @@ char *strEncoding(int encoding) {
 
 /* Given an object returns the min number of milliseconds the object was never
  * requested, using an approximated LRU algorithm. */
-/// ???? LRU算法有待进一步了解
+/// 返回obj的限制时间
 unsigned long long estimateObjectIdleTime(robj *o) {
     unsigned long long lruclock = LRU_CLOCK();
     if (lruclock >= o->lru) {
         return (lruclock - o->lru) * REDIS_LRU_CLOCK_RESOLUTION;
-    } else {
+    } else { /// 因为LRU_CLOCK最大为0xFFFFFF,时间戳大大超过这个值,所以会rollback
         return (lruclock + (REDIS_LRU_CLOCK_MAX - o->lru)) *
                     REDIS_LRU_CLOCK_RESOLUTION;
     }

@@ -948,6 +948,7 @@ void activeExpireCycle(int type) {
     }
 }
 
+/// 返回lru时间
 unsigned int getLRUClock(void) {
     return (mstime()/REDIS_LRU_CLOCK_RESOLUTION) & REDIS_LRU_CLOCK_MAX;
 }
@@ -1208,6 +1209,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
      *
      * Note that you can change the resolution altering the
      * REDIS_LRU_CLOCK_RESOLUTION define. */
+    /// 更新LRU时间
     server.lruclock = getLRUClock();
 
     /* Record the max memory used since the server was started. */
@@ -3411,6 +3413,7 @@ void monitorCommand(redisClient *c) {
  * evicted in the whole database. */
 
 /* Create a new eviction pool. */
+/// 创建一个新的,能容纳REDIS_EVICTION_POOL_SIZE个大小的eviction pool,为lru算法使用
 struct evictionPoolEntry *evictionPoolAlloc(void) {
     struct evictionPoolEntry *ep;
     int j;
@@ -3433,6 +3436,7 @@ struct evictionPoolEntry *evictionPoolAlloc(void) {
  * right. */
 
 #define EVICTION_SAMPLES_ARRAY_SIZE 16
+/// 将idletime长的key放入pool中合适的位置,sampledict, keydict作用不明........????????
 void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEntry *pool) {
     int j, k, count;
     dictEntry *_samples[EVICTION_SAMPLES_ARRAY_SIZE];
@@ -3440,12 +3444,14 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
 
     /* Try to use a static buffer: this function is a big hit...
      * Note: it was actually measured that this helps. */
+    /// 如果我们设置的server.maxmemory_samples小于EVICTION_SAMPLES_ARRAY_SIZE,那么直接使用静态的buf
     if (server.maxmemory_samples <= EVICTION_SAMPLES_ARRAY_SIZE) {
         samples = _samples;
-    } else {
+    } else { /// 否则使用堆上对象
         samples = zmalloc(sizeof(samples[0])*server.maxmemory_samples);
     }
 
+    /// 从sampledict中拿出至多server.maxmemory_samples个key到samples中,返回拿出的数量
     count = dictGetSomeKeys(sampledict,samples,server.maxmemory_samples);
     for (j = 0; j < count; j++) {
         unsigned long long idle;
@@ -3458,22 +3464,34 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
         /* If the dictionary we are sampling from is not the main
          * dictionary (but the expires one) we need to lookup the key
          * again in the key dictionary to obtain the value object. */
-        if (sampledict != keydict) de = dictFind(keydict, key);
+        if (sampledict != keydict) 
+        {
+            de = dictFind(keydict, key);
+        }
+
         o = dictGetVal(de);
+        /// 计算这个key的空闲时间
         idle = estimateObjectIdleTime(o);
 
         /* Insert the element inside the pool.
          * First, find the first empty bucket or the first populated
          * bucket that has an idle time smaller than our idle time. */
         k = 0;
+        /// 计算出pool中的插入位置,索引为k
         while (k < REDIS_EVICTION_POOL_SIZE &&
                pool[k].key &&
-               pool[k].idle < idle) k++;
-        if (k == 0 && pool[REDIS_EVICTION_POOL_SIZE-1].key != NULL) {
+               pool[k].idle < idle) 
+        {
+            k++;
+        }
+
+        /// 这里可能有个bug,如果k == REDIS_EVICTION_POOL_SIZE????????
+        if (k == 0 && pool[REDIS_EVICTION_POOL_SIZE-1].key != NULL) { 
             /* Can't insert if the element is < the worst element we have
              * and there are no empty buckets. */
+            /// pool中最小空闲时间的key都比我们取出的这个obj的idletime大
             continue;
-        } else if (k < REDIS_EVICTION_POOL_SIZE && pool[k].key == NULL) {
+        } else if (k < REDIS_EVICTION_POOL_SIZE && pool[k].key == NULL) { /// 找到了一个插入位置,这个位置上key为空,一般这个时候pool还未满
             /* Inserting into empty position. No setup needed before insert. */
         } else {
             /* Inserting in the middle. Now k points to the first element
@@ -3481,6 +3499,8 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
             if (pool[REDIS_EVICTION_POOL_SIZE-1].key == NULL) {
                 /* Free space on the right? Insert at k shifting
                  * all the elements from k to end to the right. */
+                /// [-|-|-|-|k|1|2|3|4]
+                /// [-|-|-|-|-|k|1|2|3]
                 memmove(pool+k+1,pool+k,
                     sizeof(pool[0])*(REDIS_EVICTION_POOL_SIZE-k-1));
             } else {
@@ -3489,15 +3509,21 @@ void evictionPoolPopulate(dict *sampledict, dict *keydict, struct evictionPoolEn
                 /* Shift all elements on the left of k (included) to the
                  * left, so we discard the element with smaller idle time. */
                 sdsfree(pool[0].key);
+                /// [1|2|3|4|k|-|-|-|-]
+                /// [2|3|4|k|-|-|-|-|-]
                 memmove(pool,pool+1,sizeof(pool[0])*k);
             }
         }
+        /// 将key插入到pool的k位置
         pool[k].key = sdsdup(key);
         pool[k].idle = idle;
     }
+
+    /// 如果使用的不是栈上对象,要释放
     if (samples != _samples) zfree(samples);
 }
 
+/// 根据redis-server的内存淘汰策略,在redis-server内存不足时进行淘汰
 int freeMemoryIfNeeded(void) {
     size_t mem_used, mem_tofree, mem_freed;
     int slaves = listLength(server.slaves);
@@ -3505,7 +3531,9 @@ int freeMemoryIfNeeded(void) {
 
     /* Remove the size of slaves output buffers and AOF buffer from the
      * count of used memory. */
+    /// 取出redis使用的内存数
     mem_used = zmalloc_used_memory();
+
     if (slaves) {
         listIter li;
         listNode *ln;
@@ -3513,21 +3541,29 @@ int freeMemoryIfNeeded(void) {
         listRewind(server.slaves,&li);
         while((ln = listNext(&li))) {
             redisClient *slave = listNodeValue(ln);
+            /// 取出这个slave客户端使用的output buffer bytes
             unsigned long obuf_bytes = getClientOutputBufferMemoryUsage(slave);
+            /// 将mem_used扣除obuf_bytes
             if (obuf_bytes > mem_used)
                 mem_used = 0;
             else
                 mem_used -= obuf_bytes;
         }
     }
+    /// 将mem_used中aof部分的内存扣除
     if (server.aof_state != REDIS_AOF_OFF) {
         mem_used -= sdslen(server.aof_buf);
         mem_used -= aofRewriteBufferSize();
     }
 
     /* Check if we are over the memory limit. */
-    if (mem_used <= server.maxmemory) return REDIS_OK;
+    /// 没有达到最大内存限制
+    if (mem_used <= server.maxmemory) 
+    {
+        return REDIS_OK;
+    }
 
+    /// server.maxmemory_policy,即redis的内存控制策略是从不淘汰key
     if (server.maxmemory_policy == REDIS_MAXMEMORY_NO_EVICTION)
         return REDIS_ERR; /* We need to free memory, but policy forbids. */
 
@@ -3538,6 +3574,7 @@ int freeMemoryIfNeeded(void) {
     while (mem_freed < mem_tofree) {
         int j, k, keys_freed = 0;
 
+        /// 遍历db
         for (j = 0; j < server.dbnum; j++) {
             long bestval = 0; /* just to prevent warning */
             sds bestkey = NULL;
@@ -3545,6 +3582,7 @@ int freeMemoryIfNeeded(void) {
             redisDb *db = server.db+j;
             dict *dict;
 
+            /// 根据内存淘汰策略选择对应的dict
             if (server.maxmemory_policy == REDIS_MAXMEMORY_ALLKEYS_LRU ||
                 server.maxmemory_policy == REDIS_MAXMEMORY_ALLKEYS_RANDOM)
             {
@@ -3552,32 +3590,42 @@ int freeMemoryIfNeeded(void) {
             } else {
                 dict = server.db[j].expires;
             }
+            
+            /// db为空
             if (dictSize(dict) == 0) continue;
 
             /* volatile-random and allkeys-random policy */
+            /// 随机淘汰
             if (server.maxmemory_policy == REDIS_MAXMEMORY_ALLKEYS_RANDOM ||
                 server.maxmemory_policy == REDIS_MAXMEMORY_VOLATILE_RANDOM)
             {
+                /// 选择随机的key
                 de = dictGetRandomKey(dict);
                 bestkey = dictGetKey(de);
             }
 
             /* volatile-lru and allkeys-lru policy */
+            /// LRU算法进行key的淘汰
             else if (server.maxmemory_policy == REDIS_MAXMEMORY_ALLKEYS_LRU ||
                 server.maxmemory_policy == REDIS_MAXMEMORY_VOLATILE_LRU)
             {
                 struct evictionPoolEntry *pool = db->eviction_pool;
 
                 while(bestkey == NULL) {
+                    /// 将idle长的某个key压入eviction_pool中
                     evictionPoolPopulate(dict, db->dict, db->eviction_pool);
                     /* Go backward from best to worst element to evict. */
+                    /// pool中按照idletime排序,idletime小的在前,大的在后
                     for (k = REDIS_EVICTION_POOL_SIZE-1; k >= 0; k--) {
                         if (pool[k].key == NULL) continue;
                         de = dictFind(dict,pool[k].key);
 
                         /* Remove the entry from the pool. */
+                        /// 将key从pool中释放
                         sdsfree(pool[k].key);
                         /* Shift all elements on its right to left. */
+                        /// [1|2|3|4|5|k|6|7|8]
+                        /// [1|2|3|4|5|6|7|8|x]
                         memmove(pool+k,pool+k+1,
                             sizeof(pool[0])*(REDIS_EVICTION_POOL_SIZE-k-1));
                         /* Clear the element on the right which is empty
@@ -3604,12 +3652,14 @@ int freeMemoryIfNeeded(void) {
                     sds thiskey;
                     long thisval;
 
+                    /// 从expired_keys中取出随机的key
                     de = dictGetRandomKey(dict);
                     thiskey = dictGetKey(de);
                     thisval = (long) dictGetVal(de);
 
                     /* Expire sooner (minor expire unix timestamp) is better
                      * candidate for deletion */
+                    /// 肯定是把快过期的key删除好啊
                     if (bestkey == NULL || thisval < bestval) {
                         bestkey = thiskey;
                         bestval = thisval;
@@ -3638,7 +3688,9 @@ int freeMemoryIfNeeded(void) {
                 latencyAddSampleIfNeeded("eviction-del",eviction_latency);
                 latencyRemoveNestedEvent(latency,eviction_latency);
                 delta -= (long long) zmalloc_used_memory();
+                /// 记录释放的内存数
                 mem_freed += delta;
+                /// 淘汰的key+1
                 server.stat_evictedkeys++;
                 notifyKeyspaceEvent(REDIS_NOTIFY_EVICTED, "evicted",
                     keyobj, db->id);
@@ -3652,6 +3704,7 @@ int freeMemoryIfNeeded(void) {
                 if (slaves) flushSlavesOutputBuffers();
             }
         }
+        /// 一个key都没删除
         if (!keys_freed) {
             latencyEndMonitor(latency);
             latencyAddSampleIfNeeded("eviction-cycle",latency);
