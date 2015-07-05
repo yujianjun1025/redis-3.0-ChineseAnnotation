@@ -61,6 +61,7 @@ dictType latencyTimeSeriesDictType = {
 #ifdef __linux__
 /* Returns 1 if Transparent Huge Pages support is enabled in the kernel.
  * Otherwise (or if we are unable to check) 0 is returned. */
+/// THP: 大内存页相关
 int THPIsEnabled(void) {
     char buf[1024];
 

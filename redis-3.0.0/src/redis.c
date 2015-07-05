@@ -1803,6 +1803,7 @@ void adjustOpenFilesLimit(void) {
 /// 检查系统的TCP BAKCLOP设置是否比server.tcp_backlog大,只有满足这个条件,我们才能调整server.tcp_backlog
 void checkTcpBacklogSettings(void) {
 #ifdef HAVE_PROC_SOMAXCONN
+    /// LISTEN监听队列的长度,默认为128
     FILE *fp = fopen("/proc/sys/net/core/somaxconn","r");
     char buf[1024];
     if (!fp) return;
@@ -3719,7 +3720,15 @@ int freeMemoryIfNeeded(void) {
 /* =================================== Main! ================================ */
 
 #ifdef __linux__
+/// 返回linux的内存分配策略
 int linuxOvercommitMemoryValue(void) {
+    /// 关于overcommit_memory
+    /// 内核参数overcommit_memory 
+    /// 它是 内存分配策略
+    /// 可选值：0、1、2。
+    /// 0:表示内核将检查是否有足够的可用内存供应用进程使用:如果有足够的可用内存,内存申请允许;否则内存申请失败,并把错误返回给应用进程
+    /// 1:表示内核允许分配所有的物理内存,而不管当前的内存状态如何
+    /// 2:表示内核允许分配超过所有物理内存和交换空间总和的内存
     FILE *fp = fopen("/proc/sys/vm/overcommit_memory","r");
     char buf[64];
 
@@ -3733,6 +3742,7 @@ int linuxOvercommitMemoryValue(void) {
     return atoi(buf);
 }
 
+/// 查看linux内存管理配置存在的可能的问题
 void linuxMemoryWarnings(void) {
     if (linuxOvercommitMemoryValue() == 0) {
         redisLog(REDIS_WARNING,"WARNING overcommit_memory is set to 0! Background save may fail under low memory condition. To fix this issue add 'vm.overcommit_memory = 1' to /etc/sysctl.conf and then reboot or run the command 'sysctl vm.overcommit_memory=1' for this to take effect.");
@@ -3743,6 +3753,7 @@ void linuxMemoryWarnings(void) {
 }
 #endif /* __linux__ */
 
+/// 创建PID文件,当daemonize时使用
 void createPidFile(void) {
     /* Try to write the pid file in a best-effort way. */
     FILE *fp = fopen(server.pidfile,"w");
@@ -3752,15 +3763,18 @@ void createPidFile(void) {
     }
 }
 
+/// 后台运行的进程通用的代码
 void daemonize(void) {
     int fd;
 
     if (fork() != 0) exit(0); /* parent exits */
+
     setsid(); /* create a new session */
 
     /* Every output goes to /dev/null. If Redis is daemonized but
      * the 'logfile' is set to 'stdout' in the configuration file
      * it will not log at all. */
+    /// 重定向标准输出到NULL
     if ((fd = open("/dev/null", O_RDWR, 0)) != -1) {
         dup2(fd, STDIN_FILENO);
         dup2(fd, STDOUT_FILENO);
@@ -3769,6 +3783,7 @@ void daemonize(void) {
     }
 }
 
+/// 返回redis-server的版本
 void version(void) {
     printf("Redis server v=%s sha=%s:%d malloc=%s bits=%d build=%llx\n",
         REDIS_VERSION,
@@ -3780,6 +3795,7 @@ void version(void) {
     exit(0);
 }
 
+/// 返回redis-server的用法
 void usage(void) {
     fprintf(stderr,"Usage: ./redis-server [/path/to/redis.conf] [options]\n");
     fprintf(stderr,"       ./redis-server - (read config from stdin)\n");
@@ -3797,11 +3813,13 @@ void usage(void) {
     exit(1);
 }
 
+/// 打印redis的logo和服务器运行的信息
 void redisAsciiArt(void) {
 #include "asciilogo.h"
     char *buf = zmalloc(1024*16);
     char *mode;
 
+    /// 记录服务器运行的模式
     if (server.cluster_enabled) mode = "cluster";
     else if (server.sentinel_mode) mode = "sentinel";
     else mode = "standalone";
@@ -3830,6 +3848,7 @@ void redisAsciiArt(void) {
     zfree(buf);
 }
 
+/// 信号sig的回调函数,可能会使redis-server关闭
 static void sigShutdownHandler(int sig) {
     char *msg;
 
@@ -3860,6 +3879,7 @@ static void sigShutdownHandler(int sig) {
     server.shutdown_asap = 1;
 }
 
+/// 注册信号以及信号回调函数等
 void setupSignalHandlers(void) {
     struct sigaction act;
 
@@ -3887,6 +3907,7 @@ void memtest(size_t megabytes, int passes);
 
 /* Returns 1 if there is --sentinel among the arguments or if
  * argv[0] is exactly "redis-sentinel". */
+/// 返回参数argv中是否带有sentinel这个字符串,用来确认redis-server 是否运行在sentinel模式下
 int checkForSentinelMode(int argc, char **argv) {
     int j;
 
@@ -3897,6 +3918,7 @@ int checkForSentinelMode(int argc, char **argv) {
 }
 
 /* Function called at startup to load RDB or AOF file in memory. */
+/// 从.rdb或者.aof文件中加载数据到redis-server中
 void loadDataFromDisk(void) {
     long long start = ustime();
     if (server.aof_state == REDIS_AOF_ON) {
@@ -3913,12 +3935,14 @@ void loadDataFromDisk(void) {
     }
 }
 
+/// redis-server oom时的回调函数
 void redisOutOfMemoryHandler(size_t allocation_size) {
     redisLog(REDIS_WARNING,"Out Of Memory allocating %zu bytes!",
         allocation_size);
     redisPanic("Redis aborting for OUT OF MEMORY");
 }
 
+/// 设置redis-server进程的名字
 void redisSetProcTitle(char *title) {
 #ifdef USE_SETPROCTITLE
     char *server_mode = "";
@@ -3944,11 +3968,15 @@ int main(int argc, char **argv) {
 #endif
     setlocale(LC_COLLATE,"");
     zmalloc_enable_thread_safeness();
+    /// 设置内存oom时的回调函数
     zmalloc_set_oom_handler(redisOutOfMemoryHandler);
     srand(time(NULL)^getpid());
     gettimeofday(&tv,NULL);
+    /// 设置hash函数的种子为一个随机数
     dictSetHashFunctionSeed(tv.tv_sec^tv.tv_usec^getpid());
+    /// 查看server是否在sentinel模式下
     server.sentinel_mode = checkForSentinelMode(argc,argv);
+    /// 初始化配置
     initServerConfig();
 
     /* We need to init sentinel right now as parsing the configuration file
@@ -3959,6 +3987,7 @@ int main(int argc, char **argv) {
         initSentinel();
     }
 
+    /// 额外的参数解析
     if (argc >= 2) {
         int j = 1; /* First option to parse in argv[] */
         sds options = sdsempty();
@@ -4011,23 +4040,40 @@ int main(int argc, char **argv) {
         resetServerSaveParams();
         loadServerConfig(configfile,options);
         sdsfree(options);
-    } else {
+    } else { /// ./redis-server 没有配置文件
         redisLog(REDIS_WARNING, "Warning: no config file specified, using the default config. In order to specify a config file use %s /path/to/%s.conf", argv[0], server.sentinel_mode ? "sentinel" : "redis");
     }
-    if (server.daemonize) daemonize();
+
+    /// 后台运行
+    if (server.daemonize) 
+    {
+        daemonize();
+    }
+
     initServer();
-    if (server.daemonize) createPidFile();
+    if (server.daemonize) 
+    {
+        createPidFile();
+    }
+
+    /// 设置进程名称
     redisSetProcTitle(argv[0]);
+    /// 打印redis的logo和服务器信息
     redisAsciiArt();
 
+    /// server不运行在sentinel模式下
     if (!server.sentinel_mode) {
         /* Things not needed when running in Sentinel mode. */
         redisLog(REDIS_WARNING,"Server started, Redis version " REDIS_VERSION);
     #ifdef __linux__
+        /// 检查linux的内存分配策略以及限制
         linuxMemoryWarnings();
     #endif
+        /// 查看linux listen监听队列的长度
         checkTcpBacklogSettings();
+        /// 从disk中加载数据
         loadDataFromDisk();
+        /// 集群模式暂时不看????????
         if (server.cluster_enabled) {
             if (verifyClusterConfigWithData() == REDIS_ERR) {
                 redisLog(REDIS_WARNING,
@@ -4036,8 +4082,10 @@ int main(int argc, char **argv) {
                 exit(1);
             }
         }
+        /// 绑定了ip:port
         if (server.ipfd_count > 0)
             redisLog(REDIS_NOTICE,"The server is now ready to accept connections on port %d", server.port);
+        /// 绑定了unix domain socket
         if (server.sofd > 0)
             redisLog(REDIS_NOTICE,"The server is now ready to accept connections at %s", server.unixsocket);
     } else {
@@ -4045,12 +4093,16 @@ int main(int argc, char **argv) {
     }
 
     /* Warning the user about suspicious maxmemory setting. */
+    /// redis-server最大可使用内存配置小于1MB
     if (server.maxmemory > 0 && server.maxmemory < 1024*1024) {
         redisLog(REDIS_WARNING,"WARNING: You specified a maxmemory value that is less than 1MB (current value is %llu bytes). Are you sure this is what you really want?", server.maxmemory);
     }
 
+    /// 设置每次进入时间循环前调用的函数
     aeSetBeforeSleepProc(server.el,beforeSleep);
+    /// 进行时间循环
     aeMain(server.el);
+    /// 删除事件循环
     aeDeleteEventLoop(server.el);
     return 0;
 }
