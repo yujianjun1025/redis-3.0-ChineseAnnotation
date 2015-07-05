@@ -167,6 +167,7 @@ void feedReplicationBacklog(void *ptr, size_t len) {
 
 /* Wrapper for feedReplicationBacklog() that takes Redis string objects
  * as input. */
+/// 将string类型的obj添加到repl_backlog中
 void feedReplicationBacklogWithObject(robj *o) {
     char llstr[REDIS_LONGSTR_SIZE];
     void *p;
@@ -182,6 +183,7 @@ void feedReplicationBacklogWithObject(robj *o) {
     feedReplicationBacklog(p,len);
 }
 
+/// 将argc个argv命令发送到slave的dictid数据库中,并写入repl_backlog中
 void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
     listNode *ln;
     listIter li;
@@ -190,12 +192,14 @@ void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
 
     /* If there aren't slaves, and there is no backlog buffer to populate,
      * we can return ASAP. */
+    /// repl_backlog为空且slave链表为空
     if (server.repl_backlog == NULL && listLength(slaves) == 0) return;
 
     /* We can't have slaves attached and no backlog. */
     redisAssert(!(listLength(slaves) != 0 && server.repl_backlog == NULL));
 
     /* Send SELECT command to every slave if needed. */
+    /// 对每个slave进行SELECT命令
     if (server.slaveseldb != dictid) {
         robj *selectcmd;
 
@@ -217,6 +221,7 @@ void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
 
         /* Send it to slaves. */
         listRewind(slaves,&li);
+        /// 将每一个SELECT命令发送到slave中
         while((ln = listNext(&li))) {
             redisClient *slave = ln->value;
             addReply(slave,selectcmd);
@@ -228,6 +233,7 @@ void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
     server.slaveseldb = dictid;
 
     /* Write the command to the replication backlog if any. */
+    /// 将argc个argv[]命令写入repl_backlog中
     if (server.repl_backlog) {
         char aux[REDIS_LONGSTR_SIZE+3];
 
@@ -256,6 +262,7 @@ void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
 
     /* Write the command to every slave. */
     listRewind(server.slaves,&li);
+    /// 遍历slave,将命令发送到slave中
     while((ln = listNext(&li))) {
         redisClient *slave = ln->value;
 
@@ -276,6 +283,7 @@ void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
     }
 }
 
+/// 将client,dictid,argv拼在一起后发送到monitors
 void replicationFeedMonitors(redisClient *c, list *monitors, int dictid, robj **argv, int argc) {
     listNode *ln;
     listIter li;
@@ -285,7 +293,9 @@ void replicationFeedMonitors(redisClient *c, list *monitors, int dictid, robj **
     struct timeval tv;
 
     gettimeofday(&tv,NULL);
+    /// cmdrepr: "+sec.usec"
     cmdrepr = sdscatprintf(cmdrepr,"%ld.%06ld ",(long)tv.tv_sec,(long)tv.tv_usec);
+    /// cmdrepr: "+sec.usec client flag/id"
     if (c->flags & REDIS_LUA_CLIENT) {
         cmdrepr = sdscatprintf(cmdrepr,"[%d lua] ",dictid);
     } else if (c->flags & REDIS_UNIX_SOCKET) {
@@ -294,6 +304,7 @@ void replicationFeedMonitors(redisClient *c, list *monitors, int dictid, robj **
         cmdrepr = sdscatprintf(cmdrepr,"[%d %s] ",dictid,getClientPeerId(c));
     }
 
+    /// 将argv拼接在cmdrepr后面
     for (j = 0; j < argc; j++) {
         if (argv[j]->encoding == REDIS_ENCODING_INT) {
             cmdrepr = sdscatprintf(cmdrepr, "\"%ld\"", (long)argv[j]->ptr);
@@ -308,6 +319,7 @@ void replicationFeedMonitors(redisClient *c, list *monitors, int dictid, robj **
     cmdobj = createObject(REDIS_STRING,cmdrepr);
 
     listRewind(monitors,&li);
+    /// 将拼接好的cmdrepr发送到monitor
     while((ln = listNext(&li))) {
         redisClient *monitor = ln->value;
         addReply(monitor,cmdobj);
