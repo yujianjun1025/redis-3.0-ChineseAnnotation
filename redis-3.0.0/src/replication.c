@@ -48,18 +48,20 @@ void putSlaveOnline(redisClient *slave);
  * pair. Mostly useful for logging, since we want to log a slave using its
  * IP address and it's listening port which is more clear for the user, for
  * example: "Closing connection with slave 10.1.2.3:6380". */
+/// 返回slave的ip:port
 char *replicationGetSlaveName(redisClient *c) {
     static char buf[REDIS_PEER_ID_LEN];
     char ip[REDIS_IP_STR_LEN];
 
     ip[0] = '\0';
     buf[0] = '\0';
+    /// 将描述符转为ip地址
     if (anetPeerToString(c->fd,ip,sizeof(ip),NULL) != -1) {
         if (c->slave_listening_port)
             snprintf(buf,sizeof(buf),"%s:%d",ip,c->slave_listening_port);
         else
             snprintf(buf,sizeof(buf),"%s:<unknown-slave-port>",ip);
-    } else {
+    } else { /// 拿ip地址失败,只能返回id
         snprintf(buf,sizeof(buf),"client id #%llu",
             (unsigned long long) c->id);
     }
@@ -68,6 +70,7 @@ char *replicationGetSlaveName(redisClient *c) {
 
 /* ---------------------------------- MASTER -------------------------------- */
 
+/// 创建一个新的replication backlog,里面的变量暂时还不知道有啥用????????
 void createReplicationBacklog(void) {
     redisAssert(server.repl_backlog == NULL);
     server.repl_backlog = zmalloc(server.repl_backlog_size);
@@ -91,9 +94,12 @@ void createReplicationBacklog(void) {
  * it contains the same data as the previous one (possibly less data, but
  * the most recent bytes, or the same data and more free space in case the
  * buffer is enlarged). */
+/// 重新设置server.repl_backlog_size为newsize,并分配新的repl_backlog
 void resizeReplicationBacklog(long long newsize) {
+    /// 最少为REDIS_REPL_BACKLOG_MIN_SIZE(16K)
     if (newsize < REDIS_REPL_BACKLOG_MIN_SIZE)
         newsize = REDIS_REPL_BACKLOG_MIN_SIZE;
+
     if (server.repl_backlog_size == newsize) return;
 
     server.repl_backlog_size = newsize;
@@ -112,6 +118,7 @@ void resizeReplicationBacklog(long long newsize) {
     }
 }
 
+/// 将repl_backlog释放
 void freeReplicationBacklog(void) {
     redisAssert(listLength(server.slaves) == 0);
     zfree(server.repl_backlog);
@@ -122,26 +129,37 @@ void freeReplicationBacklog(void) {
  * This function also increments the global replication offset stored at
  * server.master_repl_offset, because there is no case where we want to feed
  * the backlog without incrementing the buffer. */
+/// 将len长的数据ptr写入repl_backlog中:注意,repl_backlog为环形buffer,不会丢数据????????master_repl_offset和repl_backlog_off都有啥用
 void feedReplicationBacklog(void *ptr, size_t len) {
     unsigned char *p = ptr;
 
+    /// 
     server.master_repl_offset += len;
 
     /* This is a circular buffer, so write as much data we can at every
      * iteration and rewind the "idx" index if we reach the limit. */
     while(len) {
+        /// 计算repl_backlog尾部剩余的空间
         size_t thislen = server.repl_backlog_size - server.repl_backlog_idx;
-        if (thislen > len) thislen = len;
+        if (thislen > len) 
+        {
+            thislen = len;
+        }
         memcpy(server.repl_backlog+server.repl_backlog_idx,p,thislen);
         server.repl_backlog_idx += thislen;
+        /// repl_backlog是一个环形buffer,将idx重置为0
         if (server.repl_backlog_idx == server.repl_backlog_size)
+        {
             server.repl_backlog_idx = 0;
+        }
         len -= thislen;
         p += thislen;
         server.repl_backlog_histlen += thislen;
     }
+    /// repl_backlog_histlen最长为repl_backlog_size
     if (server.repl_backlog_histlen > server.repl_backlog_size)
         server.repl_backlog_histlen = server.repl_backlog_size;
+
     /* Set the offset of the first byte we have in the backlog. */
     server.repl_backlog_off = server.master_repl_offset -
                               server.repl_backlog_histlen + 1;
