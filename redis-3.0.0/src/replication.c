@@ -497,24 +497,36 @@ int startBgsaveForReplication(void) {
     redisLog(REDIS_NOTICE,"Starting BGSAVE for SYNC with target: %s",
         server.repl_diskless_sync ? "slaves sockets" : "disk");
 
-    if (server.repl_diskless_sync)
+    /// 这个变量用来标志是否直接将rdb发往slave,不保存到disk
+    if (server.repl_diskless_sync) /// 一般这个变量都设置为0
+    {
         retval = rdbSaveToSlavesSockets();
-    else
+    }
+    else /// 后台保存rdb到rdb_filename中
+    {
         retval = rdbSaveBackground(server.rdb_filename);
+    }
 
     /* Flush the script cache, since we need that slave differences are
      * accumulated without requiring slaves to match our cached scripts. */
-    if (retval == REDIS_OK) replicationScriptCacheFlush();
+    if (retval == REDIS_OK) 
+    {
+        replicationScriptCacheFlush();
+    }
+
     return retval;
 }
 
 /* SYNC and PSYNC command implemenation. */
+/// ?????????????????????再看一次这个函数??????????????????????????
 void syncCommand(redisClient *c) {
     /* ignore SYNC if already slave or in monitor mode */
+    /// 已经是slave了,直接返回
     if (c->flags & REDIS_SLAVE) return;
 
     /* Refuse SYNC requests if we are a slave but the link with our master
      * is not ok... */
+    /// 没有连上master或者master拒绝了这个链接
     if (server.masterhost && server.repl_state != REDIS_REPL_CONNECTED) {
         addReplyError(c,"Can't SYNC while not connected with my master");
         return;
@@ -524,6 +536,7 @@ void syncCommand(redisClient *c) {
      * the client about already issued commands. We need a fresh reply
      * buffer registering the differences between the BGSAVE and the current
      * dataset, so that we can copy to other slaves if needed. */
+    /// 当client的发送缓冲中有数据时,暂时不能SYNC
     if (listLength(c->reply) != 0 || c->bufpos != 0) {
         addReplyError(c,"SYNC and PSYNC are invalid with pending output");
         return;
@@ -541,7 +554,7 @@ void syncCommand(redisClient *c) {
      *
      * So the slave knows the new runid and offset to try a PSYNC later
      * if the connection with the master is lost. */
-    if (!strcasecmp(c->argv[0]->ptr,"psync")) {
+    if (!strcasecmp(c->argv[0]->ptr,"psync")) { /// psync命令
         if (masterTryPartialResynchronization(c) == REDIS_OK) {
             server.stat_sync_partial_ok++;
             return; /* No full resync needed, return. */
@@ -566,6 +579,7 @@ void syncCommand(redisClient *c) {
 
     /* Here we need to check if there is a background saving operation
      * in progress, or if it is required to start one */
+    /// rdb文件正在后台存储中且存储类型为磁盘
     if (server.rdb_child_pid != -1 &&
         server.rdb_child_type == REDIS_RDB_CHILD_TYPE_DISK)
     {
@@ -593,8 +607,8 @@ void syncCommand(redisClient *c) {
             c->replstate = REDIS_REPL_WAIT_BGSAVE_START;
             redisLog(REDIS_NOTICE,"Waiting for next BGSAVE for SYNC");
         }
-    } else if (server.rdb_child_pid != -1 &&
-               server.rdb_child_type == REDIS_RDB_CHILD_TYPE_SOCKET)
+    } else if (server.rdb_child_pid != -1 && 
+               server.rdb_child_type == REDIS_RDB_CHILD_TYPE_SOCKET) /// rdb文件正在后台保存中且类型为直接写slave socket
     {
         /* There is an RDB child process but it is writing directly to
          * children sockets. We need to wait for the next BGSAVE
