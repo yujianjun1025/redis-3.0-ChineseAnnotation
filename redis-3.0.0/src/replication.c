@@ -329,9 +329,11 @@ void replicationFeedMonitors(redisClient *c, list *monitors, int dictid, robj **
 
 /* Feed the slave 'c' with the replication backlog starting from the
  * specified 'offset' up to the end of the backlog. */
+/// 将server的backlog从offset开始发送给client????????
 long long addReplyReplicationBacklog(redisClient *c, long long offset) {
     long long j, skip, len;
 
+    /// slave要求repl从特殊的offset开始传
     redisLog(REDIS_DEBUG, "[PSYNC] Slave request offset: %lld", offset);
 
     if (server.repl_backlog_histlen == 0) {
@@ -339,6 +341,7 @@ long long addReplyReplicationBacklog(redisClient *c, long long offset) {
         return 0;
     }
 
+    /// 打印repl backlog的大小
     redisLog(REDIS_DEBUG, "[PSYNC] Backlog size: %lld",
              server.repl_backlog_size);
     redisLog(REDIS_DEBUG, "[PSYNC] First byte: %lld",
@@ -349,23 +352,27 @@ long long addReplyReplicationBacklog(redisClient *c, long long offset) {
              server.repl_backlog_idx);
 
     /* Compute the amount of bytes we need to discard. */
+    /// 计算出我们跳过的字节数
     skip = offset - server.repl_backlog_off;
     redisLog(REDIS_DEBUG, "[PSYNC] Skipping: %lld", skip);
 
     /* Point j to the oldest byte, that is actaully our
      * server.repl_backlog_off byte. */
+    /// 计算出旧的指针位置
     j = (server.repl_backlog_idx +
         (server.repl_backlog_size-server.repl_backlog_histlen)) %
         server.repl_backlog_size;
     redisLog(REDIS_DEBUG, "[PSYNC] Index of first byte: %lld", j);
 
     /* Discard the amount of data to seek to the specified 'offset'. */
+    /// 跳过skip个byte
     j = (j + skip) % server.repl_backlog_size;
 
     /* Feed slave with data. Since it is a circular buffer we have to
      * split the reply in two parts if we are cross-boundary. */
     len = server.repl_backlog_histlen - skip;
     redisLog(REDIS_DEBUG, "[PSYNC] Reply total length: %lld", len);
+    /// 将len长度的字节发送给slave
     while(len) {
         long long thislen =
             ((server.repl_backlog_size - j) < len) ?
@@ -384,6 +391,8 @@ long long addReplyReplicationBacklog(redisClient *c, long long offset) {
  *
  * On success return REDIS_OK, otherwise REDIS_ERR is returned and we proceed
  * with the usual full resync. */
+/// MASTER尝试从某一个off开始重传repl给slave
+/// 这个函数用于PSYNC命令
 int masterTryPartialResynchronization(redisClient *c) {
     long long psync_offset, psync_len;
     char *master_runid = c->argv[1]->ptr;
@@ -393,13 +402,14 @@ int masterTryPartialResynchronization(redisClient *c) {
     /* Is the runid of this master the same advertised by the wannabe slave
      * via PSYNC? If runid changed this master is a different instance and
      * there is no way to continue. */
+    /// 不等于0表示id不同
     if (strcasecmp(master_runid, server.runid)) {
         /* Run id "?" is used by slaves that want to force a full resync. */
-        if (master_runid[0] != '?') {
+        if (master_runid[0] != '?') { /// id不匹配
             redisLog(REDIS_NOTICE,"Partial resynchronization not accepted: "
                 "Runid mismatch (Client asked for runid '%s', my runid is '%s')",
                 master_runid, server.runid);
-        } else {
+        } else { /// '?'表示client想强制重传整个repl
             redisLog(REDIS_NOTICE,"Full resync requested by slave %s",
                 replicationGetSlaveName(c));
         }
@@ -407,8 +417,11 @@ int masterTryPartialResynchronization(redisClient *c) {
     }
 
     /* We still have the data our slave is asking for? */
+    /// 拿到psync_offset
     if (getLongLongFromObjectOrReply(c,c->argv[2],&psync_offset,NULL) !=
        REDIS_OK) goto need_full_resync;
+
+    /// repl_backlog为空或者psync_offset超过范围,注意看log
     if (!server.repl_backlog ||
         psync_offset < server.repl_backlog_off ||
         psync_offset > (server.repl_backlog_off + server.repl_backlog_histlen))
@@ -426,19 +439,23 @@ int masterTryPartialResynchronization(redisClient *c) {
      * 1) Set client state to make it a slave.
      * 2) Inform the client we can continue with +CONTINUE
      * 3) Send the backlog data (from the offset to the end) to the slave. */
-    c->flags |= REDIS_SLAVE;
-    c->replstate = REDIS_REPL_ONLINE;
+    c->flags |= REDIS_SLAVE; /// client设置SLAVE标志
+    c->replstate = REDIS_REPL_ONLINE; /// client同步状态设置为同步中
     c->repl_ack_time = server.unixtime;
     c->repl_put_online_on_ack = 0;
-    listAddNodeTail(server.slaves,c);
+    listAddNodeTail(server.slaves,c); /// 添加到server.slaves列表中
     /* We can't use the connection buffers since they are used to accumulate
      * new commands at this stage. But we are sure the socket send buffer is
      * empty so this write will never fail actually. */
+    /// 向客户端返回+CONTINUE表示可以继续更新,从某个offset继续
     buflen = snprintf(buf,sizeof(buf),"+CONTINUE\r\n");
+    /// 写失败
     if (write(c->fd,buf,buflen) != buflen) {
         freeClientAsync(c);
         return REDIS_OK;
     }
+
+    /// 将psync_offset开始处的backlog传给c
     psync_len = addReplyReplicationBacklog(c,psync_offset);
     redisLog(REDIS_NOTICE,
         "Partial resynchronization request from %s accepted. Sending %lld bytes of backlog starting from offset %lld.",
@@ -453,11 +470,13 @@ int masterTryPartialResynchronization(redisClient *c) {
 
 need_full_resync:
     /* We need a full resync for some reason... notify the client. */
+    /// 揭示了server.master_repl_offset这个变量的作用!!!!!!!!
     psync_offset = server.master_repl_offset;
     /* Add 1 to psync_offset if it the replication backlog does not exists
      * as when it will be created later we'll increment the offset by one. */
     if (server.repl_backlog == NULL) psync_offset++;
     /* Again, we can't use the connection buffers (see above). */
+    /// 向客户端返回+FULLRESYNC表示不能部分同步,要全部更新
     buflen = snprintf(buf,sizeof(buf),"+FULLRESYNC %s %lld\r\n",
                       server.runid,psync_offset);
     if (write(c->fd,buf,buflen) != buflen) {
