@@ -491,6 +491,7 @@ need_full_resync:
  * the script cache is flushed before to start.
  *
  * Returns REDIS_OK on success or REDIS_ERR otherwise. */
+/// 开始后台rdb保存,为replication做准备
 int startBgsaveForReplication(void) {
     int retval;
 
@@ -820,6 +821,9 @@ void sendBulkToSlave(aeEventLoop *el, int fd, void *privdata, int mask) {
  * otherwise REDIS_ERR is passed to the function.
  * The 'type' argument is the type of the child that terminated
  * (if it had a disk or socket target). */
+/// bgsave完成后会调用这个函数,将rdb文件发送到'先前状态为等待BGSAVE结束的slave'.
+/// 函数中将'等待BGSAVE开始的客户端'状态值为'等待BGSAVE结束',并再一次启动bgsave
+/// ???????? BGSAVE刚结束,就可能立即重新启动BGSAVE,是否存在性能问题????????
 void updateSlavesWaitingBgsave(int bgsaveerr, int type) {
     listNode *ln;
     int startbgsave = 0;
@@ -858,6 +862,7 @@ void updateSlavesWaitingBgsave(int bgsaveerr, int type) {
                     redisLog(REDIS_WARNING,"SYNC failed. BGSAVE child returned an error");
                     continue;
                 }
+                /// 打开rdb文件并获取文件状态
                 if ((slave->repldbfd = open(server.rdb_filename,O_RDONLY)) == -1 ||
                     redis_fstat(slave->repldbfd,&buf) == -1) {
                     freeClient(slave);
@@ -865,12 +870,13 @@ void updateSlavesWaitingBgsave(int bgsaveerr, int type) {
                     continue;
                 }
                 slave->repldboff = 0;
-                slave->repldbsize = buf.st_size;
+                slave->repldbsize = buf.st_size; /// rdb文件大小
                 slave->replstate = REDIS_REPL_SEND_BULK;
-                slave->replpreamble = sdscatprintf(sdsempty(),"$%lld\r\n",
+                slave->replpreamble = sdscatprintf(sdsempty(),"$%lld\r\n", /// preamble记录的是rdb的大小
                     (unsigned long long) slave->repldbsize);
 
                 aeDeleteFileEvent(server.el,slave->fd,AE_WRITABLE);
+                /// 注册发送rdb文件到slave的事件函数
                 if (aeCreateFileEvent(server.el, slave->fd, AE_WRITABLE, sendBulkToSlave, slave) == AE_ERR) {
                     freeClient(slave);
                     continue;
@@ -879,6 +885,7 @@ void updateSlavesWaitingBgsave(int bgsaveerr, int type) {
         }
     }
     if (startbgsave) {
+        /// 启动后台的rdb保存失败了
         if (startBgsaveForReplication() != REDIS_OK) {
             listIter li;
 
@@ -887,6 +894,7 @@ void updateSlavesWaitingBgsave(int bgsaveerr, int type) {
             while((ln = listNext(&li))) {
                 redisClient *slave = ln->value;
 
+                /// slave等待BGSAVE开始,BGSAVE失败了,那么将这个slave释放
                 if (slave->replstate == REDIS_REPL_WAIT_BGSAVE_START)
                     freeClient(slave);
             }
