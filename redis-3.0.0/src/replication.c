@@ -555,10 +555,11 @@ void syncCommand(redisClient *c) {
      * So the slave knows the new runid and offset to try a PSYNC later
      * if the connection with the master is lost. */
     if (!strcasecmp(c->argv[0]->ptr,"psync")) { /// psync命令
+        /// partial sync成功,就返回了
         if (masterTryPartialResynchronization(c) == REDIS_OK) {
             server.stat_sync_partial_ok++;
             return; /* No full resync needed, return. */
-        } else {
+        } else { /// partial sync失败了,还要继续sync
             char *master_runid = c->argv[1]->ptr;
 
             /* Increment stats for failed PSYNCs, but only if the
@@ -567,7 +568,7 @@ void syncCommand(redisClient *c) {
              * resync. */
             if (master_runid[0] != '?') server.stat_sync_partial_err++;
         }
-    } else {
+    } else { /// sync命令
         /* If a slave uses SYNC, we are dealing with an old implementation
          * of the replication protocol (like redis-cli --slave). Flag the client
          * so that we don't expect to receive REPLCONF ACK feedbacks. */
@@ -657,9 +658,11 @@ void syncCommand(redisClient *c) {
  * In the future the same command can be used in order to configure
  * the replication to initiate an incremental replication instead of a
  * full resync. */
+/// REPLCONF命令的实现,有一部分代码没看懂????????
 void replconfCommand(redisClient *c) {
     int j;
 
+    /// 参数错误
     if ((c->argc % 2) == 0) {
         /* Number of arguments must be odd to make sure that every
          * option has a corresponding value. */
@@ -669,6 +672,7 @@ void replconfCommand(redisClient *c) {
 
     /* Process every option-value pair. */
     for (j = 1; j < c->argc; j+=2) {
+        /// 设置slave 监听端口
         if (!strcasecmp(c->argv[j]->ptr,"listening-port")) {
             long port;
 
@@ -676,7 +680,7 @@ void replconfCommand(redisClient *c) {
                     &port,NULL) != REDIS_OK))
                 return;
             c->slave_listening_port = port;
-        } else if (!strcasecmp(c->argv[j]->ptr,"ack")) {
+        } else if (!strcasecmp(c->argv[j]->ptr,"ack")) { /// 这个ACK值得是什么意思????????
             /* REPLCONF ACK is used by slave to inform the master the amount
              * of replication stream that it processed so far. It is an
              * internal only command that normal clients should never use. */
@@ -686,7 +690,7 @@ void replconfCommand(redisClient *c) {
             if ((getLongLongFromObject(c->argv[j+1], &offset) != REDIS_OK))
                 return;
             if (offset > c->repl_ack_off)
-                c->repl_ack_off = offset;
+                c->repl_ack_off = offset; ///repl_ack_off是什么意思????????
             c->repl_ack_time = server.unixtime;
             /* If this was a diskless replication, we need to really put
              * the slave online when the first ACK is received (which
@@ -721,10 +725,12 @@ void replconfCommand(redisClient *c) {
  *    command disables it, so that we can accumulate output buffer without
  *    sending it to the slave.
  * 3) Update the count of good slaves. */
+/// 启用SLAVE
 void putSlaveOnline(redisClient *slave) {
     slave->replstate = REDIS_REPL_ONLINE;
     slave->repl_put_online_on_ack = 0;
     slave->repl_ack_time = server.unixtime; /* Prevent false timeout. */
+    /// 创建slave的描述符可写事件
     if (aeCreateFileEvent(server.el, slave->fd, AE_WRITABLE,
         sendReplyToClient, slave) == AE_ERR) {
         redisLog(REDIS_WARNING,"Unable to register writable event for slave bulk transfer: %s", strerror(errno));
@@ -736,6 +742,7 @@ void putSlaveOnline(redisClient *slave) {
         replicationGetSlaveName(slave));
 }
 
+/// 发送rdb文件到slave.这是一个事件函数
 void sendBulkToSlave(aeEventLoop *el, int fd, void *privdata, int mask) {
     redisClient *slave = privdata;
     REDIS_NOTUSED(el);
@@ -746,16 +753,19 @@ void sendBulkToSlave(aeEventLoop *el, int fd, void *privdata, int mask) {
     /* Before sending the RDB file, we send the preamble as configured by the
      * replication process. Currently the preamble is just the bulk count of
      * the file in the form "$<length>\r\n". */
+    /// replpreamble:前导,类似于prefix,发送前先发前导
     if (slave->replpreamble) {
         nwritten = write(fd,slave->replpreamble,sdslen(slave->replpreamble));
-        if (nwritten == -1) {
+        if (nwritten == -1) { /// 写失败
             redisLog(REDIS_VERBOSE,"Write error sending RDB preamble to slave: %s",
                 strerror(errno));
             freeClient(slave);
             return;
         }
         server.stat_net_output_bytes += nwritten;
+        /// 取出replpreamble还未发送的部分
         sdsrange(slave->replpreamble,nwritten,-1);
+        /// 为0说明全部发送完毕 
         if (sdslen(slave->replpreamble) == 0) {
             sdsfree(slave->replpreamble);
             slave->replpreamble = NULL;
@@ -767,6 +777,7 @@ void sendBulkToSlave(aeEventLoop *el, int fd, void *privdata, int mask) {
 
     /* If the preamble was already transfered, send the RDB bulk data. */
     lseek(slave->repldbfd,slave->repldboff,SEEK_SET);
+    /// 读rdb文件,slve->repldbfd是一个指向rdb.filename的文件描述符
     buflen = read(slave->repldbfd,buf,REDIS_IOBUF_LEN);
     if (buflen <= 0) {
         redisLog(REDIS_WARNING,"Read error sending DB to slave: %s",
@@ -774,6 +785,7 @@ void sendBulkToSlave(aeEventLoop *el, int fd, void *privdata, int mask) {
         freeClient(slave);
         return;
     }
+    /// 将rdb写往socket描述符
     if ((nwritten = write(fd,buf,buflen)) == -1) {
         if (errno != EAGAIN) {
             redisLog(REDIS_WARNING,"Write error sending DB to slave: %s",
@@ -784,10 +796,12 @@ void sendBulkToSlave(aeEventLoop *el, int fd, void *privdata, int mask) {
     }
     slave->repldboff += nwritten;
     server.stat_net_output_bytes += nwritten;
+    /// 整个rdb全部写完
     if (slave->repldboff == slave->repldbsize) {
         close(slave->repldbfd);
         slave->repldbfd = -1;
         aeDeleteFileEvent(server.el,slave->fd,AE_WRITABLE);
+        /// 注册slave的sendReplyToClient事件函数
         putSlaveOnline(slave);
     }
 }
