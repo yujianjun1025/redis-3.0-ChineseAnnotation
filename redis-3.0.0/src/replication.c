@@ -905,9 +905,12 @@ void updateSlavesWaitingBgsave(int bgsaveerr, int type) {
 /* ----------------------------------- SLAVE -------------------------------- */
 
 /* Abort the async download of the bulk dataset while SYNC-ing with master */
+/// 中断.rdb文件传输
 void replicationAbortSyncTransfer(void) {
+    /// 确认当前master状态为传输.rdb文件中
     redisAssert(server.repl_state == REDIS_REPL_TRANSFER);
 
+    /// 接下来停止.rdb文件的传输,关闭socket和文件描述符,删除.rdb临时文件,将master状态置为REDIS_REPL_CONNECT
     aeDeleteFileEvent(server.el,server.repl_transfer_s,AE_READABLE);
     close(server.repl_transfer_s);
     close(server.repl_transfer_fd);
@@ -924,10 +927,14 @@ void replicationAbortSyncTransfer(void) {
  * The function is called in two contexts: while we flush the current
  * data with emptyDb(), and while we load the new data received as an
  * RDB file from the master. */
+/// 发送一个\n字节到master,用处暂时不明????????
 void replicationSendNewlineToMaster(void) {
     static time_t newline_sent;
+    /// 1s最多调一次
     if (time(NULL) != newline_sent) {
+        /// 记录发送时间
         newline_sent = time(NULL);
+        /// 写换行符到repl_transfer_s
         if (write(server.repl_transfer_s,"\n",1) == -1) {
             /* Pinging back in this stage is best-effort. */
         }
@@ -936,6 +943,7 @@ void replicationSendNewlineToMaster(void) {
 
 /* Callback used by emptyDb() while flushing away old data to load
  * the new dataset received by the master. */
+/// 清空db后的回调函数
 void replicationEmptyDbCallback(void *privdata) {
     REDIS_NOTUSED(privdata);
     replicationSendNewlineToMaster();
@@ -943,6 +951,8 @@ void replicationEmptyDbCallback(void *privdata) {
 
 /* Asynchronously read the SYNC payload we receive from a master */
 #define REPL_MAX_WRITTEN_BEFORE_FSYNC (1024*1024*8) /* 8 MB */
+/// 这是一个事件函数,重要!
+/// slave读master发送的整个.rdb文件(包含读过程,错误处理,读完成处理)
 void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
     char buf[4096];
     ssize_t nread, readlen;
@@ -959,7 +969,8 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
 
     /* If repl_transfer_size == -1 we still have to read the bulk length
      * from the master reply. */
-    if (server.repl_transfer_size == -1) {
+    if (server.repl_transfer_size == -1) {  /// slave尚未知道master的.rdb文件大小
+        /// 同步读master1024个字节,server.repl_syncio_timeout秒超时
         if (syncReadLine(fd,buf,1024,server.repl_syncio_timeout*1000) == -1) {
             redisLog(REDIS_WARNING,
                 "I/O error reading bulk count from MASTER: %s",
@@ -967,18 +978,18 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
             goto error;
         }
 
-        if (buf[0] == '-') {
+        if (buf[0] == '-') { /// 看log可以知道,master因为错误中断了replication
             redisLog(REDIS_WARNING,
                 "MASTER aborted replication with an error: %s",
                 buf+1);
             goto error;
-        } else if (buf[0] == '\0') {
+        } else if (buf[0] == '\0') { /// 读到了一个类似于ping/pong的字节
             /* At this stage just a newline works as a PING in order to take
              * the connection live. So we refresh our last interaction
              * timestamp. */
-            server.repl_transfer_lastio = server.unixtime;
+            server.repl_transfer_lastio = server.unixtime; /// 记录时间
             return;
-        } else if (buf[0] != '$') {
+        } else if (buf[0] != '$') { /// 协议错误,第一个字节一定得是'$'
             redisLog(REDIS_WARNING,"Bad protocol from MASTER, the first byte is not '$' (we received '%s'), are you sure the host and port are right?", buf);
             goto error;
         }
@@ -993,18 +1004,20 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
          * At the end of the file the announced delimiter is transmitted. The
          * delimiter is long and random enough that the probability of a
          * collision with the actual file content can be ignored. */
+        /// 读到的master发来的协议格式为:$EOF:<40 byets delimiter>
+        /// 读到这种格式,说明master尚未知道.rdb文件的大小,利用暂时生成的长随机数替代文件长度
         if (strncmp(buf+1,"EOF:",4) == 0 && strlen(buf+5) >= REDIS_RUN_ID_SIZE) {
             usemark = 1;
-            memcpy(eofmark,buf+5,REDIS_RUN_ID_SIZE);
+            memcpy(eofmark,buf+5,REDIS_RUN_ID_SIZE); /// 保存eofmark
             memset(lastbytes,0,REDIS_RUN_ID_SIZE);
             /* Set any repl_transfer_size to avoid entering this code path
              * at the next call. */
-            server.repl_transfer_size = 0;
+            server.repl_transfer_size = 0; /// 暂时未知,设为0,下次调用不进入这个分支,也就是if (server.repl_transfer_size == -1)
             redisLog(REDIS_NOTICE,
                 "MASTER <-> SLAVE sync: receiving streamed RDB from master");
         } else {
             usemark = 0;
-            server.repl_transfer_size = strtol(buf+1,NULL,10);
+            server.repl_transfer_size = strtol(buf+1,NULL,10); /// 保存master .rdb文件的大小到repl_transfer_size中
             redisLog(REDIS_NOTICE,
                 "MASTER <-> SLAVE sync: receiving %lld bytes from master",
                 (long long) server.repl_transfer_size);
@@ -1013,20 +1026,23 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
     }
 
     /* Read bulk data */
-    if (usemark) {
+    if (usemark) { /// 每次读都是buf的大小4096
         readlen = sizeof(buf);
-    } else {
+    } else { /// 每次都满一个buf或者剩余字节
         left = server.repl_transfer_size - server.repl_transfer_read;
         readlen = (left < (signed)sizeof(buf)) ? left : (signed)sizeof(buf);
     }
 
     nread = read(fd,buf,readlen);
+    /// 读错误
     if (nread <= 0) {
         redisLog(REDIS_WARNING,"I/O error trying to sync with MASTER: %s",
             (nread == -1) ? strerror(errno) : "connection lost");
+        /// 中断这个.rdb的流传输
         replicationAbortSyncTransfer();
         return;
     }
+    /// 更新读取到的字节数
     server.stat_net_input_bytes += nread;
 
     /* When a mark is used, we want to detect EOF asap in order to avoid
@@ -1035,17 +1051,23 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
 
     if (usemark) {
         /* Update the last bytes array, and check if it matches our delimiter.*/
+        /// 每一次读取,如果超过了REDIS_RUN_ID_SIZE,那么要将尾端的REDIS_RUN_ID_SIZE个字节拷贝到lastbytes中,用于判断是否读到了EOF
         if (nread >= REDIS_RUN_ID_SIZE) {
             memcpy(lastbytes,buf+nread-REDIS_RUN_ID_SIZE,REDIS_RUN_ID_SIZE);
-        } else {
+        } else { /// 读取到少于REDIS_RUN_ID_SIZE,将这部分拼在lastbytes尾部,左移lastbytes中对于的字节到正确的位置
             int rem = REDIS_RUN_ID_SIZE-nread;
             memmove(lastbytes,lastbytes+nread,rem);
             memcpy(lastbytes+rem,buf,nread);
         }
-        if (memcmp(lastbytes,eofmark,REDIS_RUN_ID_SIZE) == 0) eof_reached = 1;
+        /// 比对lastbytes和eofmark,相同则说明到了流的末端
+        if (memcmp(lastbytes,eofmark,REDIS_RUN_ID_SIZE) == 0) 
+        {
+            eof_reached = 1;
+        }
     }
 
     server.repl_transfer_lastio = server.unixtime;
+    /// ????????
     if (write(server.repl_transfer_fd,buf,nread) != nread) {
         redisLog(REDIS_WARNING,"Write error or short write writing to the DB dump file needed for MASTER <-> SLAVE synchronization: %s", strerror(errno));
         goto error;
@@ -1053,7 +1075,9 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
     server.repl_transfer_read += nread;
 
     /* Delete the last 40 bytes from the file if we reached EOF. */
+    /// 到达了EOF
     if (usemark && eof_reached) {
+        /// 将文件末端的REDIS_RUN_ID_SIZE个字节裁剪掉
         if (ftruncate(server.repl_transfer_fd,
             server.repl_transfer_read - REDIS_RUN_ID_SIZE) == -1)
         {
@@ -1065,45 +1089,57 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
     /* Sync data on disk from time to time, otherwise at the end of the transfer
      * we may suffer a big delay as the memory buffers are copied into the
      * actual disk. */
+    /// 读取超过了8MB,同步数据到磁盘中,使用了性能较高的sync_file_range
     if (server.repl_transfer_read >=
         server.repl_transfer_last_fsync_off + REPL_MAX_WRITTEN_BEFORE_FSYNC)
     {
+        /// 计算出本次同步的字节数
         off_t sync_size = server.repl_transfer_read -
                           server.repl_transfer_last_fsync_off;
+        /// 从上次读取到的位置开始,将本次读取到的字节数sync到磁盘中
         rdb_fsync_range(server.repl_transfer_fd,
             server.repl_transfer_last_fsync_off, sync_size);
         server.repl_transfer_last_fsync_off += sync_size;
     }
 
     /* Check if the transfer is now complete */
-    if (!usemark) {
+    if (!usemark) { /// 判断非$EOF<>的是否到达了文件末尾
         if (server.repl_transfer_read == server.repl_transfer_size)
             eof_reached = 1;
     }
 
-    if (eof_reached) {
+    if (eof_reached) { /// 整个master 的rdb文件都读完了
+        /// 重命名接收到的rdb文件
         if (rename(server.repl_transfer_tmpfile,server.rdb_filename) == -1) {
             redisLog(REDIS_WARNING,"Failed trying to rename the temp DB into dump.rdb in MASTER <-> SLAVE synchronization: %s", strerror(errno));
             replicationAbortSyncTransfer();
             return;
         }
+
+        /// 清空slave db的操作
         redisLog(REDIS_NOTICE, "MASTER <-> SLAVE sync: Flushing old data");
         signalFlushedDb(-1);
+        /// 清db,完成后回调replicationEmptyDbCallback
         emptyDb(replicationEmptyDbCallback);
         /* Before loading the DB into memory we need to delete the readable
          * handler, otherwise it will get called recursively since
          * rdbLoad() will call the event loop to process events from time to
          * time for non blocking loading. */
+        /// 删除读取master .rdb文件的事件函数
         aeDeleteFileEvent(server.el,server.repl_transfer_s,AE_READABLE);
         redisLog(REDIS_NOTICE, "MASTER <-> SLAVE sync: Loading DB in memory");
+        /// 从.rdb文件中加载数据库
         if (rdbLoad(server.rdb_filename) != REDIS_OK) {
             redisLog(REDIS_WARNING,"Failed trying to load the MASTER synchronization DB from disk");
             replicationAbortSyncTransfer();
             return;
         }
         /* Final setup of the connected slave <- master link */
+        /// 删除临时文件
         zfree(server.repl_transfer_tmpfile);
+        /// 关闭保存.rdb文件的描述符
         close(server.repl_transfer_fd);
+        /// 保存slave对应的master的各种配置
         server.master = createClient(server.repl_transfer_s);
         server.master->flags |= REDIS_MASTER;
         server.master->authenticated = 1;
@@ -1113,16 +1149,19 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
             sizeof(server.repl_master_runid));
         /* If master offset is set to -1, this master is old and is not
          * PSYNC capable, so we flag it accordingly. */
+        /// 不支持PSYNC
         if (server.master->reploff == -1)
             server.master->flags |= REDIS_PRE_PSYNC;
         redisLog(REDIS_NOTICE, "MASTER <-> SLAVE sync: Finished with success");
         /* Restart the AOF subsystem now that we finished the sync. This
          * will trigger an AOF rewrite, and when done will start appending
          * to the new file. */
+        /// 尝试启动AOF
         if (server.aof_state != REDIS_AOF_OFF) {
             int retry = 10;
 
             stopAppendOnly();
+            /// 重试10次 
             while (retry-- && startAppendOnly() == REDIS_ERR) {
                 redisLog(REDIS_WARNING,"Failed enabling the AOF after successful master synchronization! Trying it again in one second.");
                 sleep(1);
@@ -1137,6 +1176,7 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
     return;
 
 error:
+    /// 发生了错误,中断.rdb文件的传输
     replicationAbortSyncTransfer();
     return;
 }
