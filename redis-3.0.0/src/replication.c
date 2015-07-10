@@ -1187,6 +1187,7 @@ error:
  * The command returns an sds string representing the result of the
  * operation. On error the first byte is a "-".
  */
+/// 将...（未知参数拼接后)写往描述符fd,并返回读fd返回的数据
 char *sendSynchronousCommand(int fd, ...) {
     va_list ap;
     sds cmd = sdsempty();
@@ -1195,6 +1196,7 @@ char *sendSynchronousCommand(int fd, ...) {
     /* Create the command to send to the master, we use simple inline
      * protocol for simplicity as currently we only send simple strings. */
     va_start(ap,fd);
+    /// 拼接参数在一条cmd中
     while(1) {
         arg = va_arg(ap, char*);
         if (arg == NULL) break;
@@ -1205,6 +1207,7 @@ char *sendSynchronousCommand(int fd, ...) {
     cmd = sdscatlen(cmd,"\r\n",2);
 
     /* Transfer command to the server. */
+    /// 将cmd同步写至fd
     if (syncWrite(fd,cmd,sdslen(cmd),server.repl_syncio_timeout*1000) == -1) {
         sdsfree(cmd);
         return sdscatprintf(sdsempty(),"-Writing to master: %s",
@@ -1213,11 +1216,13 @@ char *sendSynchronousCommand(int fd, ...) {
     sdsfree(cmd);
 
     /* Read the reply from the server. */
+    /// 同步从fd读
     if (syncReadLine(fd,buf,sizeof(buf),server.repl_syncio_timeout*1000) == -1)
     {
         return sdscatprintf(sdsempty(),"-Reading from master: %s",
                 strerror(errno));
     }
+    /// 返回从fd读到的内容
     return sdsnew(buf);
 }
 
@@ -1248,6 +1253,7 @@ char *sendSynchronousCommand(int fd, ...) {
 #define PSYNC_CONTINUE 0
 #define PSYNC_FULLRESYNC 1
 #define PSYNC_NOT_SUPPORTED 2
+/// slave尝试进行PSYNC
 int slaveTryPartialResynchronization(int fd) {
     char *psync_runid;
     char psync_offset[32];
@@ -1260,19 +1266,22 @@ int slaveTryPartialResynchronization(int fd) {
      * client structure representing the master into server.master. */
     server.repl_master_initial_offset = -1;
 
+    /// 缓存了master,将master_id和psync偏移量拼接在命令中
     if (server.cached_master) {
         psync_runid = server.cached_master->replrunid;
         snprintf(psync_offset,sizeof(psync_offset),"%lld", server.cached_master->reploff+1);
         redisLog(REDIS_NOTICE,"Trying a partial resynchronization (request %s:%s).", psync_runid, psync_offset);
-    } else {
+    } else { /// 没缓存master,拼接'PSYNC ？ -1'强制全部同步,w
         redisLog(REDIS_NOTICE,"Partial resynchronization not possible (no cached master)");
         psync_runid = "?";
         memcpy(psync_offset,"-1",3);
     }
 
     /* Issue the PSYNC command */
+    /// 发送命令至master,并得到响应reply
     reply = sendSynchronousCommand(fd,"PSYNC",psync_runid,psync_offset,NULL);
 
+    /// 进入这个分支表示要进行一次FULLRESYNC
     if (!strncmp(reply,"+FULLRESYNC",11)) {
         char *runid = NULL, *offset = NULL;
 
@@ -1284,6 +1293,7 @@ int slaveTryPartialResynchronization(int fd) {
             offset = strchr(runid,' ');
             if (offset) offset++;
         }
+        /// 获取master run_id 错误(读到的格式错误)
         if (!runid || !offset || (offset-runid-1) != REDIS_RUN_ID_SIZE) {
             redisLog(REDIS_WARNING,
                 "Master replied with wrong +FULLRESYNC syntax.");
@@ -1291,10 +1301,13 @@ int slaveTryPartialResynchronization(int fd) {
              * reply means that the master supports PSYNC, but the reply
              * format seems wrong. To stay safe we blank the master
              * runid to make sure next PSYNCs will fail. */
+            /// 清空repl_master_runid
             memset(server.repl_master_runid,0,REDIS_RUN_ID_SIZE+1);
-        } else {
+        } else { 
+            /// 保存master_runid
             memcpy(server.repl_master_runid, runid, offset-runid-1);
             server.repl_master_runid[REDIS_RUN_ID_SIZE] = '\0';
+            /// 保存master偏移量
             server.repl_master_initial_offset = strtoll(offset,NULL,10);
             redisLog(REDIS_NOTICE,"Full resync from master: %s:%lld",
                 server.repl_master_runid,
@@ -1306,6 +1319,7 @@ int slaveTryPartialResynchronization(int fd) {
         return PSYNC_FULLRESYNC;
     }
 
+    /// 继续同步
     if (!strncmp(reply,"+CONTINUE",9)) {
         /* Partial resync was accepted, set the replication state accordingly */
         redisLog(REDIS_NOTICE,
@@ -1319,11 +1333,12 @@ int slaveTryPartialResynchronization(int fd) {
      * not understand PSYNC, or an unexpected reply from the master.
      * Return PSYNC_NOT_SUPPORTED to the caller in both cases. */
 
+    /// master出错
     if (strncmp(reply,"-ERR",4)) {
         /* If it's not an error, log the unexpected event. */
         redisLog(REDIS_WARNING,
             "Unexpected reply to PSYNC from master: %s", reply);
-    } else {
+    } else { /// master出现未知错误或者不支持PSYNC
         redisLog(REDIS_NOTICE,
             "Master does not support PSYNC or is in "
             "error state (reply: %s)", reply);
