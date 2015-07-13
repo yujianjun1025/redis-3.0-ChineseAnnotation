@@ -1532,9 +1532,11 @@ error:
     return;
 }
 
+/// slave连接到master,并创建同步的事件函数
 int connectWithMaster(void) {
     int fd;
 
+    /// 创建sock描述符
     fd = anetTcpNonBlockBindConnect(NULL,
         server.masterhost,server.masterport,REDIS_BIND_ADDR);
     if (fd == -1) {
@@ -1543,6 +1545,8 @@ int connectWithMaster(void) {
         return REDIS_ERR;
     }
 
+    /// 为什么这个事件函数绑定了READABLE|WRITEABLE ????????
+    /// 可能是因为syncWithMaster中有read|write fd的操作,且有主动删除读/写操作
     if (aeCreateFileEvent(server.el,fd,AE_READABLE|AE_WRITABLE,syncWithMaster,NULL) ==
             AE_ERR)
     {
@@ -1551,6 +1555,7 @@ int connectWithMaster(void) {
         return REDIS_ERR;
     }
 
+    /// 保存状态
     server.repl_transfer_lastio = server.unixtime;
     server.repl_transfer_s = fd;
     server.repl_state = REDIS_REPL_CONNECTING;
@@ -1559,11 +1564,14 @@ int connectWithMaster(void) {
 
 /* This function can be called when a non blocking connection is currently
  * in progress to undo it. */
+/// 关闭slave与master的连接,删除描述符上的事件函数
 void undoConnectWithMaster(void) {
     int fd = server.repl_transfer_s;
 
+    /// 检查是否已经连接
     redisAssert(server.repl_state == REDIS_REPL_CONNECTING ||
                 server.repl_state == REDIS_REPL_RECEIVE_PONG);
+    /// 删除事件函数
     aeDeleteFileEvent(server.el,fd,AE_READABLE|AE_WRITABLE);
     close(fd);
     server.repl_transfer_s = -1;
@@ -1578,12 +1586,14 @@ void undoConnectWithMaster(void) {
  * the replication state (server.repl_state) set to REDIS_REPL_CONNECT.
  *
  * Otherwise zero is returned and no operation is perforemd at all. */
+/// 根据slave与master连接状态,中断slave与master的连接/传输
 int cancelReplicationHandshake(void) {
+    /// 如果已经在传输.rdb文件,那么中断传送
     if (server.repl_state == REDIS_REPL_TRANSFER) {
         replicationAbortSyncTransfer();
-    } else if (server.repl_state == REDIS_REPL_CONNECTING ||
-             server.repl_state == REDIS_REPL_RECEIVE_PONG)
-    {
+    } 
+    else if (server.repl_state == REDIS_REPL_CONNECTING || server.repl_state == REDIS_REPL_RECEIVE_PONG)
+    {   /// 连接中或者刚连接上,断开与master的连接
         undoConnectWithMaster();
     } else {
         return 0;
@@ -1592,16 +1602,33 @@ int cancelReplicationHandshake(void) {
 }
 
 /* Set replication to the specified master address and port. */
+/// 设置slave的master为ip,port并做一些释放旧的slave工作
 void replicationSetMaster(char *ip, int port) {
+    /// 删除原来的master
     sdsfree(server.masterhost);
+    /// 指定新的master ip
     server.masterhost = sdsnew(ip);
+    /// 指定新的master port
     server.masterport = port;
-    if (server.master) freeClient(server.master);
+    /// 释放原来的master
+    /// slave<->master互为client
+    if (server.master) 
+    {
+        freeClient(server.master);
+    }
+
+    /// 将block的client断开
     disconnectAllBlockedClients(); /* Clients blocked in master, now slave. */
+    /// 将(旧的)slave全部断开
     disconnectSlaves(); /* Force our slaves to resync with us as well. */
+    /// 将cache的master丢弃
     replicationDiscardCachedMaster(); /* Don't try a PSYNC. */
+    /// 释放repl_backlog
     freeReplicationBacklog(); /* Don't allow our chained slaves to PSYNC. */
+    /// 中断与master的连接
     cancelReplicationHandshake();
+
+    /// 重新设置状态
     server.repl_state = REDIS_REPL_CONNECT;
     server.master_repl_offset = 0;
     server.repl_down_since = 0;

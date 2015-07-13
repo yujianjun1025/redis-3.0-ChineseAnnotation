@@ -268,6 +268,7 @@ typedef long long mstime_t; /* millisecond time type. */
 #define REDIS_CLIENT_TYPE_COUNT 3
 
 /* Slave replication state - from the point of view of the slave. */
+/// 从上到下(0-5)为slave连接master的步骤
 #define REDIS_REPL_NONE 0 /* No active replication */
 #define REDIS_REPL_CONNECT 1 /* Must connect to master */
 #define REDIS_REPL_CONNECTING 2 /* Connecting to master */
