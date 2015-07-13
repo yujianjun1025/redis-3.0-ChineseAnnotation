@@ -1348,6 +1348,8 @@ int slaveTryPartialResynchronization(int fd) {
     return PSYNC_NOT_SUPPORTED;
 }
 
+/// 这是一个事件函数
+/// slave与master同步事件函数
 void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
     char tmpfile[256], *err;
     int dfd, maxtries = 5;
@@ -1359,15 +1361,18 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
 
     /* If this event fired after the user turned the instance into a master
      * with SLAVEOF NO ONE we must just return ASAP. */
+    /// 没有replaction
     if (server.repl_state == REDIS_REPL_NONE) {
         close(fd);
         return;
     }
 
     /* Check for errors in the socket. */
+    /// 检查socket是否存在错误
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &sockerr, &errlen) == -1)
         sockerr = errno;
     if (sockerr) {
+        /// 存在错误则删除本描述符上的写事件函数
         aeDeleteFileEvent(server.el,fd,AE_READABLE|AE_WRITABLE);
         redisLog(REDIS_WARNING,"Error condition on socket for SYNC: %s",
             strerror(sockerr));
@@ -1378,6 +1383,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
      * make sure the master is able to reply before going into the actual
      * replication process where we have long timeouts in the order of
      * seconds (in the meantime the slave would block). */
+    /// slave正与master连接中
     if (server.repl_state == REDIS_REPL_CONNECTING) {
         redisLog(REDIS_NOTICE,"Non blocking connect for SYNC fired the event.");
         /* Delete the writable event so that the readable event remains
@@ -1386,11 +1392,13 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
         server.repl_state = REDIS_REPL_RECEIVE_PONG;
         /* Send the PING, don't check for errors at all, we have the timeout
          * that will take care about this. */
+        /// 往master发送ping命令,确认是否可以收到pong,以最大程度保证接下来的同步
         syncWrite(fd,"PING\r\n",6,100);
         return;
     }
 
     /* Receive the PONG command. */
+    /// 已经发送了ping,等待接收pong
     if (server.repl_state == REDIS_REPL_RECEIVE_PONG) {
         char buf[1024];
 
@@ -1400,6 +1408,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
 
         /* Read the reply with explicit timeout. */
         buf[0] = '\0';
+        /// 从master同步读取一行
         if (syncReadLine(fd,buf,sizeof(buf),
             server.repl_syncio_timeout*1000) == -1)
         {
@@ -1414,13 +1423,14 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
          * Note that older versions of Redis replied with "operation not
          * permitted" instead of using a proper error code, so we test
          * both. */
+        /// 接收到的不是这三者中的任意一种,表明出现了错误
         if (buf[0] != '+' &&
             strncmp(buf,"-NOAUTH",7) != 0 &&
             strncmp(buf,"-ERR operation not permitted",28) != 0)
         {
             redisLog(REDIS_WARNING,"Error reply to PING from master: '%s'",buf);
             goto error;
-        } else {
+        } else { /// 成功接收pong命令
             redisLog(REDIS_NOTICE,
                 "Master replied to PING, replication can continue...");
         }
@@ -1428,6 +1438,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
 
     /* AUTH with the master if required. */
     if(server.masterauth) {
+        /// 发送用户名/密码认证到master
         err = sendSynchronousCommand(fd,"AUTH",server.masterauth,NULL);
         if (err[0] == '-') {
             redisLog(REDIS_WARNING,"Unable to AUTH to MASTER: %s",err);
@@ -1439,6 +1450,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
 
     /* Set the slave port, so that Master's INFO command can list the
      * slave listening port correctly. */
+    /// 设置slave的端口
     {
         sds port = sdsfromlonglong(server.port);
         err = sendSynchronousCommand(fd,"REPLCONF","listening-port",port,
@@ -1457,6 +1469,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
      * to start a full resynchronization so that we get the master run id
      * and the global offset, to try a partial resync at the next
      * reconnection attempt. */
+    /// 尝试进行psync
     psync_result = slaveTryPartialResynchronization(fd);
     if (psync_result == PSYNC_CONTINUE) {
         redisLog(REDIS_NOTICE, "MASTER <-> SLAVE sync: Master accepted a Partial Resynchronization.");
@@ -1466,8 +1479,10 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
     /* Fall back to SYNC if needed. Otherwise psync_result == PSYNC_FULLRESYNC
      * and the server.repl_master_runid and repl_master_initial_offset are
      * already populated. */
+    /// master不支持psync
     if (psync_result == PSYNC_NOT_SUPPORTED) {
         redisLog(REDIS_NOTICE,"Retrying with SYNC...");
+        /// 发送sync到master
         if (syncWrite(fd,"SYNC\r\n",6,server.repl_syncio_timeout*1000) == -1) {
             redisLog(REDIS_WARNING,"I/O error writing to MASTER: %s",
                 strerror(errno));
@@ -1476,6 +1491,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
     }
 
     /* Prepare a suitable temp file for bulk transfer */
+    /// 打开/创建tmp文件用于接收master的.rdb文件
     while(maxtries--) {
         snprintf(tmpfile,256,
             "temp-%d.%ld.rdb",(int)server.unixtime,(long int)getpid());
@@ -1489,6 +1505,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
     }
 
     /* Setup the non blocking download of the bulk file. */
+    /// 创建从master读取.rdb文件的事件函数
     if (aeCreateFileEvent(server.el,fd, AE_READABLE,readSyncBulkPayload,NULL)
             == AE_ERR)
     {
@@ -1498,6 +1515,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
         goto error;
     }
 
+    /// 保存slave的各种状态
     server.repl_state = REDIS_REPL_TRANSFER;
     server.repl_transfer_size = -1;
     server.repl_transfer_read = 0;
