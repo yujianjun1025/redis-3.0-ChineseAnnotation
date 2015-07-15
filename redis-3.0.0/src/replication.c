@@ -1714,7 +1714,9 @@ void slaveofCommand(redisClient *c) {
 /* ROLE command: provide information about the role of the instance
  * (master or slave) and additional information related to replication
  * in an easy to process format. */
+/// ROLE拿到当前redis-server的角色master|slave 并打印具体信息
 void roleCommand(redisClient *c) {
+    /// master
     if (server.masterhost == NULL) {
         listIter li;
         listNode *ln;
@@ -1722,8 +1724,11 @@ void roleCommand(redisClient *c) {
         int slaves = 0;
 
         addReplyMultiBulkLen(c,3);
+        /// 返回身份标识
         addReplyBulkCBuffer(c,"master",6);
+        /// 返回master_repl_offset
         addReplyLongLong(c,server.master_repl_offset);
+        /// 返回slave列表
         mbcount = addDeferredMultiBulkLength(c);
         listRewind(server.slaves,&li);
         while((ln = listNext(&li))) {
@@ -1732,20 +1737,28 @@ void roleCommand(redisClient *c) {
 
             if (anetPeerToString(slave->fd,ip,sizeof(ip),NULL) == -1) continue;
             if (slave->replstate != REDIS_REPL_ONLINE) continue;
+            /// slave列表一个item包含3项信息
             addReplyMultiBulkLen(c,3);
+            /// slave ip
             addReplyBulkCString(c,ip);
+            /// slave port
             addReplyBulkLongLong(c,slave->slave_listening_port);
+            /// slave repl_ack_off
             addReplyBulkLongLong(c,slave->repl_ack_off);
             slaves++;
         }
         setDeferredMultiBulkLength(c,mbcount,slaves);
-    } else {
+    } else { /// slave
         char *slavestate = NULL;
 
+        /// 返回5个item
         addReplyMultiBulkLen(c,5);
         addReplyBulkCBuffer(c,"slave",5);
+        /// master ip
         addReplyBulkCString(c,server.masterhost);
+        /// master port
         addReplyLongLong(c,server.masterport);
+        /// master <-> slvae 状态
         switch(server.repl_state) {
         case REDIS_REPL_NONE: slavestate = "none"; break;
         case REDIS_REPL_CONNECT: slavestate = "connect"; break;
@@ -1756,6 +1769,7 @@ void roleCommand(redisClient *c) {
         default: slavestate = "unknown"; break;
         }
         addReplyBulkCString(c,slavestate);
+        /// master reploff
         addReplyLongLong(c,server.master ? server.master->reploff : -1);
     }
 }
@@ -1763,15 +1777,19 @@ void roleCommand(redisClient *c) {
 /* Send a REPLCONF ACK command to the master to inform it about the current
  * processed offset. If we are not connected with a master, the command has
  * no effects. */
+/// 发送reploff的偏移量ACK到master
 void replicationSendAck(void) {
     redisClient *c = server.master;
 
     if (c != NULL) {
+        /// 置REDIS_MASTER_FORCE_REPLY位
         c->flags |= REDIS_MASTER_FORCE_REPLY;
         addReplyMultiBulkLen(c,3);
+        /// 发送命令REPLCONF ACK c->reploff到master
         addReplyBulkCString(c,"REPLCONF");
         addReplyBulkCString(c,"ACK");
         addReplyBulkLongLong(c,c->reploff);
+        /// 清空REDIS_MASTER_FORCE_REPLY位
         c->flags &= ~REDIS_MASTER_FORCE_REPLY;
     }
 }
