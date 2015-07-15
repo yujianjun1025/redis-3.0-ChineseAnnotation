@@ -1635,29 +1635,44 @@ void replicationSetMaster(char *ip, int port) {
 }
 
 /* Cancel replication, setting the instance as a master itself. */
+/// 取消replication,原先身份为slave,现升级成为了master
 void replicationUnsetMaster(void) {
-    if (server.masterhost == NULL) return; /* Nothing to do. */
+    /// masterhost为空
+    if (server.masterhost == NULL) 
+    {
+        return; /* Nothing to do. */
+    }
+
     sdsfree(server.masterhost);
     server.masterhost = NULL;
+
     if (server.master) {
         if (listLength(server.slaves) == 0) {
             /* If this instance is turned into a master and there are no
              * slaves, it inherits the replication offset from the master.
              * Under certain conditions this makes replicas comparable by
              * replication offset to understand what is the most updated. */
+            /// 将slave的master_repl_offset设置为之前他所同步的master的reploff,现在这台slave已经是已master身份运行
             server.master_repl_offset = server.master->reploff;
             freeReplicationBacklog();
         }
+        /// 将以前这台slave所属的master client释放
         freeClient(server.master);
     }
+    
+    /// 进行关闭清理工作
     replicationDiscardCachedMaster();
     cancelReplicationHandshake();
+    /// 记录保存状态
     server.repl_state = REDIS_REPL_NONE;
 }
 
+/// SLAVEOF ip port
+/// 主动成为ip/port的slave
 void slaveofCommand(redisClient *c) {
     /* SLAVEOF is not allowed in cluster mode as replication is automatically
      * configured using the current address of the master node. */
+    /// cluster模式下不允许slaveof
     if (server.cluster_enabled) {
         addReplyError(c,"SLAVEOF not allowed in cluster mode.");
         return;
@@ -1665,6 +1680,7 @@ void slaveofCommand(redisClient *c) {
 
     /* The special host/port combination "NO" "ONE" turns the instance
      * into a master. Otherwise the new master address is set. */
+    /// SLAVEOF NO ONE表示我不想成为任何人的slave,我自己就是master
     if (!strcasecmp(c->argv[1]->ptr,"no") &&
         !strcasecmp(c->argv[2]->ptr,"one")) {
         if (server.masterhost) {
@@ -1678,6 +1694,7 @@ void slaveofCommand(redisClient *c) {
             return;
 
         /* Check if we are already attached to the specified slave */
+        /// 检查是否已经成为了这个ip的slave
         if (server.masterhost && !strcasecmp(server.masterhost,c->argv[1]->ptr)
             && server.masterport == port) {
             redisLog(REDIS_NOTICE,"SLAVE OF would result into synchronization with the master we are already connected with. No operation performed.");
@@ -1686,6 +1703,7 @@ void slaveofCommand(redisClient *c) {
         }
         /* There was no previous master or the user specified a different one,
          * we can continue. */
+        /// 设置ip:port为master
         replicationSetMaster(c->argv[1]->ptr, port);
         redisLog(REDIS_NOTICE,"SLAVE OF %s:%d enabled (user request)",
             server.masterhost, server.masterport);
