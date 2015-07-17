@@ -1817,21 +1817,27 @@ void replicationSendAck(void) {
 void replicationCacheMaster(redisClient *c) {
     listNode *ln;
 
+    /// 确保master存在且暂未cached_master
     redisAssert(server.master != NULL && server.cached_master == NULL);
     redisLog(REDIS_NOTICE,"Caching the disconnected master state.");
 
     /* Remove from the list of clients, we don't want this client to be
      * listed by CLIENT LIST or processed in any way by batch operations. */
+    /// 将client从server.clients列表中删除
+    /// 这个client扮演的是什么角色????????
     ln = listSearchKey(server.clients,c);
     redisAssert(ln != NULL);
     listDelNode(server.clients,ln);
 
     /* Save the master. Server.master will be set to null later by
      * replicationHandleMasterDisconnection(). */
+    /// cache住master
+    /// cached_master不是任何时候都cached的,而是在slave想断开master之前cached,下一次连接可以从cached的状态恢复
     server.cached_master = server.master;
 
     /* Remove the event handlers and close the socket. We'll later reuse
      * the socket of the new connection with the master during PSYNC. */
+    /// 删除client上的读写事件函数
     aeDeleteFileEvent(server.el,c->fd,AE_READABLE);
     aeDeleteFileEvent(server.el,c->fd,AE_WRITABLE);
     close(c->fd);
@@ -1840,6 +1846,7 @@ void replicationCacheMaster(redisClient *c) {
     c->fd = -1;
 
     /* Invalidate the Peer ID cache. */
+    /// 清空client唯一id
     if (c->peerid) {
         sdsfree(c->peerid);
         c->peerid = NULL;
@@ -1853,11 +1860,13 @@ void replicationCacheMaster(redisClient *c) {
 
 /* Free a cached master, called when there are no longer the conditions for
  * a partial resync on reconnection. */
+/// 将cached_master丢弃
 void replicationDiscardCachedMaster(void) {
     if (server.cached_master == NULL) return;
 
     redisLog(REDIS_NOTICE,"Discarding previously cached master state.");
     server.cached_master->flags &= ~REDIS_MASTER;
+    /// 关闭cached_master
     freeClient(server.cached_master);
     server.cached_master = NULL;
 }
@@ -1868,7 +1877,10 @@ void replicationDiscardCachedMaster(void) {
  * This function is called when successfully setup a partial resynchronization
  * so the stream of data that we'll receive will start from were this
  * master left. */
+/// Resurrect:复活
+/// 将master从cached_master中恢复,并创建事件函数,如果必要的话
 void replicationResurrectCachedMaster(int newfd) {
+    /// 将master从cached_master中恢复
     server.master = server.cached_master;
     server.cached_master = NULL;
     server.master->fd = newfd;
@@ -1878,7 +1890,9 @@ void replicationResurrectCachedMaster(int newfd) {
     server.repl_state = REDIS_REPL_CONNECTED;
 
     /* Re-add to the list of clients. */
+    /// 添加master client到slave.client列表中
     listAddNodeTail(server.clients,server.master);
+    /// 创建server.master上的描述符可读事件函数
     if (aeCreateFileEvent(server.el, newfd, AE_READABLE,
                           readQueryFromClient, server.master)) {
         redisLog(REDIS_WARNING,"Error resurrecting the cached master, impossible to add the readable handler: %s", strerror(errno));
@@ -1887,6 +1901,7 @@ void replicationResurrectCachedMaster(int newfd) {
 
     /* We may also need to install the write handler as well if there is
      * pending data in the write buffers. */
+    /// 如果master写缓冲区中有数据,创建可写事件函数
     if (server.master->bufpos || listLength(server.master->reply)) {
         if (aeCreateFileEvent(server.el, newfd, AE_WRITABLE,
                           sendReplyToClient, server.master)) {
