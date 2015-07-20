@@ -2553,6 +2553,8 @@ int processCommand(redisClient *c) {
     } else {
         /// 执行命令,之前将各种限制/错误的情况都返回了
         call(c,REDIS_CALL_FULL);
+        /// 更新client->woff为server.master_repl_offset,如果这个client为slave里持有的master,
+        /// 这个操作可以不断更新slave里的master客户端的offset
         c->woff = server.master_repl_offset;
         /// 执行完命令后,可能一些bpop的客户端已经可以返回了
         if (listLength(server.ready_keys))

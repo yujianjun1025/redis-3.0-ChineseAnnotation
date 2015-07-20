@@ -71,6 +71,7 @@ char *replicationGetSlaveName(redisClient *c) {
 /* ---------------------------------- MASTER -------------------------------- */
 
 /// 创建一个新的replication backlog,里面的变量暂时还不知道有啥用????????
+/// [server.repl_backlog_off - server.master_repl_offset] 这段范围为需要同步至slave的变更!!!!!!!
 void createReplicationBacklog(void) {
     redisAssert(server.repl_backlog == NULL);
     server.repl_backlog = zmalloc(server.repl_backlog_size);
