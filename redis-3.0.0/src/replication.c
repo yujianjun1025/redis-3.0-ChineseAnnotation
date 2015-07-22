@@ -185,6 +185,7 @@ void feedReplicationBacklogWithObject(robj *o) {
 }
 
 /// 将argc个argv命令发送到slave的dictid数据库中,并写入repl_backlog中
+/// 这个函数在propagate()中被调用,根据命令是否写命令,将其传到slave中
 void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
     listNode *ln;
     listIter li;
@@ -954,6 +955,7 @@ void replicationEmptyDbCallback(void *privdata) {
 #define REPL_MAX_WRITTEN_BEFORE_FSYNC (1024*1024*8) /* 8 MB */
 /// 这是一个事件函数,重要!
 /// slave读master发送的整个.rdb文件(包含读过程,错误处理,读完成处理)
+/// 这个函数里面创建了server.master这个client
 void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
     char buf[4096];
     ssize_t nread, readlen;
