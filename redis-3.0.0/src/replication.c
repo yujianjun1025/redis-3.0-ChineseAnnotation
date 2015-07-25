@@ -1008,7 +1008,7 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
          * delimiter is long and random enough that the probability of a
          * collision with the actual file content can be ignored. */
         /// 读到的master发来的协议格式为:$EOF:<40 byets delimiter>
-        /// 读到这种格式,说明master尚未知道.rdb文件的大小,利用暂时生成的长随机数替代文件长度
+        /// 读到这种格式,说明master尚未知道.rdb文件的大小,利用暂时生成的长随机数放在.rdb文件末端,通过对比eofmark确认是否读到了文件末尾
         if (strncmp(buf+1,"EOF:",4) == 0 && strlen(buf+5) >= REDIS_RUN_ID_SIZE) {
             usemark = 1;
             memcpy(eofmark,buf+5,REDIS_RUN_ID_SIZE); /// 保存eofmark
@@ -1274,7 +1274,7 @@ int slaveTryPartialResynchronization(int fd) {
         psync_runid = server.cached_master->replrunid;
         snprintf(psync_offset,sizeof(psync_offset),"%lld", server.cached_master->reploff+1);
         redisLog(REDIS_NOTICE,"Trying a partial resynchronization (request %s:%s).", psync_runid, psync_offset);
-    } else { /// 没缓存master,拼接'PSYNC ？ -1'强制全部同步,w
+    } else { /// 没缓存master,拼接'PSYNC ？ -1'强制全部同步
         redisLog(REDIS_NOTICE,"Partial resynchronization not possible (no cached master)");
         psync_runid = "?";
         memcpy(psync_offset,"-1",3);
@@ -1353,6 +1353,12 @@ int slaveTryPartialResynchronization(int fd) {
 
 /// 这是一个事件函数
 /// slave与master同步事件函数
+/// 这个事件函数本身只会存在短时间
+/// 当一个slave与master连接上,会做以下几件事
+/// 1) 发送PING至master 
+/// 2) 接收来自master的PONG
+/// 3) 尝试PSYNC,如果成功,马上可以进入master发送命令给slave,slave回ack这种状态,如果PSYNC失败,则准备SYNC
+/// 4) 创建接收master发送的.rdb事件函数,准备接收master的.rdb
 void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
     char tmpfile[256], *err;
     int dfd, maxtries = 5;
@@ -1375,7 +1381,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &sockerr, &errlen) == -1)
         sockerr = errno;
     if (sockerr) {
-        /// 存在错误则删除本描述符上的写事件函数
+        /// 存在错误则删除本描述符上的读/写事件函数(其实就是删除这整个事件函数本身)
         aeDeleteFileEvent(server.el,fd,AE_READABLE|AE_WRITABLE);
         redisLog(REDIS_WARNING,"Error condition on socket for SYNC: %s",
             strerror(sockerr));
@@ -1391,6 +1397,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
         redisLog(REDIS_NOTICE,"Non blocking connect for SYNC fired the event.");
         /* Delete the writable event so that the readable event remains
          * registered and we can wait for the PONG reply. */
+        /// 因为发送完了PING之后就不需要写事件了,而是等待MASTER的PONG,可以将写事件删除
         aeDeleteFileEvent(server.el,fd,AE_WRITABLE);
         server.repl_state = REDIS_REPL_RECEIVE_PONG;
         /* Send the PING, don't check for errors at all, we have the timeout
@@ -1407,6 +1414,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
 
         /* Delete the readable event, we no longer need it now that there is
          * the PING reply to read. */
+        /// 已经从MASTER接收到了PONG,不再需要读任何的PONG,可以将这个描述符上的读事件删除,到这里,这个函数就再也不会进入了
         aeDeleteFileEvent(server.el,fd,AE_READABLE);
 
         /* Read the reply with explicit timeout. */
