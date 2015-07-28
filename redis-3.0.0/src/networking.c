@@ -1469,8 +1469,10 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
         /// 因为read(c->querybuf)并不会增加querybuf的长度
         sdsIncrLen(c->querybuf,nread);
         c->lastinteraction = server.unixtime;
+        /// 如果这是slave接收到了来自master的命令(replication)
         if (c->flags & REDIS_MASTER) 
         {
+            /// 更新client(server.master [slave])的reploff
             c->reploff += nread;
         }
         server.stat_net_input_bytes += nread;
