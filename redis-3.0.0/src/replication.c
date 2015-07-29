@@ -162,6 +162,8 @@ void feedReplicationBacklog(void *ptr, size_t len) {
         server.repl_backlog_histlen = server.repl_backlog_size;
 
     /* Set the offset of the first byte we have in the backlog. */
+    /// server.repl_backlog_histlen最长为repl_backlog_size,所以server.repl_backlog_off与server.master_repl_offset最多
+    /// 只有一个buffer的长度,超过了就无法psync了
     server.repl_backlog_off = server.master_repl_offset -
                               server.repl_backlog_histlen + 1;
 }
@@ -276,6 +278,7 @@ void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
          * or are already in sync with the master. */
 
         /* Add the multi bulk length. */
+        /// 发送给slave,实际上的发送由sendReplyToClient执行
         addReplyMultiBulkLen(slave,argc);
 
         /* Finally any additional argument that was not stored inside the
