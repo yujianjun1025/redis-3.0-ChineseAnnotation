@@ -60,7 +60,7 @@ typedef struct sentinelAddr {
 #define SRI_MASTER_DOWN (1<<6) /* A Sentinel with this flag set thinks that
                                    its master is down. */
 #define SRI_FAILOVER_IN_PROGRESS (1<<7) /* Failover is in progress for
-                                           this master. */
+                                           this master. */  // failover:失效备援
 #define SRI_PROMOTED (1<<8)            /* Slave selected for promotion. */
 #define SRI_RECONF_SENT (1<<9)     /* SLAVEOF <newmaster> sent. */
 #define SRI_RECONF_INPROG (1<<10)   /* Slave synchronization in progress. */
