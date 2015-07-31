@@ -32,12 +32,14 @@
 /* ================================ MULTI/EXEC ============================== */
 
 /* Client state initialization for MULTI/EXEC */
+/// 初始化multi,无原子提交命令
 void initClientMultiState(redisClient *c) {
     c->mstate.commands = NULL;
     c->mstate.count = 0;
 }
 
 /* Release all the resources associated with MULTI/EXEC state */
+/// 释放客户端multi命令
 void freeClientMultiState(redisClient *c) {
     int j;
 
@@ -53,13 +55,17 @@ void freeClientMultiState(redisClient *c) {
 }
 
 /* Add a new command into the MULTI commands queue */
+/// 将client的命令添加到c->mstate.commands中(数组尾部)
 void queueMultiCommand(redisClient *c) {
     multiCmd *mc;
     int j;
 
+    /// 分配多一个slot给multi命令数组 
     c->mstate.commands = zrealloc(c->mstate.commands,
             sizeof(multiCmd)*(c->mstate.count+1));
+    /// 指向新的命令slot
     mc = c->mstate.commands+c->mstate.count;
+    /// 将命令/参数添加到新的slot
     mc->cmd = c->cmd;
     mc->argc = c->argc;
     mc->argv = zmalloc(sizeof(robj*)*c->argc);
@@ -69,40 +75,52 @@ void queueMultiCommand(redisClient *c) {
     c->mstate.count++;
 }
 
+/// 放弃事务,恢复到初始状态
 void discardTransaction(redisClient *c) {
     freeClientMultiState(c);
     initClientMultiState(c);
+    /// 取消标志位
     c->flags &= ~(REDIS_MULTI|REDIS_DIRTY_CAS|REDIS_DIRTY_EXEC);
     unwatchAllKeys(c);
 }
 
 /* Flag the transacation as DIRTY_EXEC so that EXEC will fail.
  * Should be called every time there is an error while queueing a command. */
+/// 当客户端当前在事务传输中,且执行了无效的命令或者命令参数错误时,置标志位REDIS_DIRTY_EXEC,exec时事务会失败
 void flagTransaction(redisClient *c) {
     if (c->flags & REDIS_MULTI)
         c->flags |= REDIS_DIRTY_EXEC;
 }
 
+/// 将客户端标记为事务开始状态
 void multiCommand(redisClient *c) {
+    /// 已经在事务中
     if (c->flags & REDIS_MULTI) {
         addReplyError(c,"MULTI calls can not be nested");
         return;
     }
+
+    /// 置标志位
     c->flags |= REDIS_MULTI;
     addReply(c,shared.ok);
 }
 
+/// 客户端丢弃事务,删除所有已经提交的命令
 void discardCommand(redisClient *c) {
+    /// 没有执行过事务
     if (!(c->flags & REDIS_MULTI)) {
         addReplyError(c,"DISCARD without MULTI");
         return;
     }
+
+    /// 丢弃事务
     discardTransaction(c);
     addReply(c,shared.ok);
 }
 
 /* Send a MULTI command to all the slaves and AOF file. Check the execCommand
  * implementation for more information. */
+/// 将MULTI命令传播到AOF和SLAVE,这样的为啥要传递????????
 void execCommandPropagateMulti(redisClient *c) {
     robj *multistring = createStringObject("MULTI",5);
 
@@ -118,6 +136,7 @@ void execCommand(redisClient *c) {
     struct redisCommand *orig_cmd;
     int must_propagate = 0; /* Need to propagate MULTI/EXEC to AOF / slaves? */
 
+    /// 没有MULTI,却提交了EXEC
     if (!(c->flags & REDIS_MULTI)) {
         addReplyError(c,"EXEC without MULTI");
         return;
@@ -129,20 +148,25 @@ void execCommand(redisClient *c) {
      * A failed EXEC in the first case returns a multi bulk nil object
      * (technically it is not an error but a special behavior), while
      * in the second an EXECABORT error is returned. */
+    /// key被写了或者multi后提交了错误的命令(命令不存在,参数错误)
     if (c->flags & (REDIS_DIRTY_CAS|REDIS_DIRTY_EXEC)) {
         addReply(c, c->flags & REDIS_DIRTY_EXEC ? shared.execaborterr :
                                                   shared.nullmultibulk);
+        /// 丢弃事务
         discardTransaction(c);
         goto handle_monitor;
     }
 
     /* Exec all the queued commands */
+    /// unwatch所有的已经watched的key
     unwatchAllKeys(c); /* Unwatch ASAP otherwise we'll waste CPU cycles */
+    /// 先保存c->argv,argc,cmd以便于后面恢复,但其实这里c->argv = ["EXEC"], c->argc = 1, c->cmd = execCommand
     orig_argv = c->argv;
     orig_argc = c->argc;
     orig_cmd = c->cmd;
     addReplyMultiBulkLen(c,c->mstate.count);
     for (j = 0; j < c->mstate.count; j++) {
+        /// 依序拿出等待提交命令列表中的命令,依序执行
         c->argc = c->mstate.commands[j].argc;
         c->argv = c->mstate.commands[j].argv;
         c->cmd = c->mstate.commands[j].cmd;
@@ -151,21 +175,27 @@ void execCommand(redisClient *c) {
          * This way we'll deliver the MULTI/..../EXEC block as a whole and
          * both the AOF and the replication link will have the same consistency
          * and atomicity guarantees. */
+        /// 如果等待执行命令列表中存在写命令,那么第一个写命令将会导致命令"MULTI"被传递到AOF和SLAVE中
+        /// 那么与MULTI配对的"EXEC/DISCARD"怎么看不到传递到AOF或者SLAVE中????????
         if (!must_propagate && !(c->cmd->flags & REDIS_CMD_READONLY)) {
             execCommandPropagateMulti(c);
             must_propagate = 1;
         }
 
+        /// 执行命令,所有命令都会被传递到RDB和AOF中
         call(c,REDIS_CALL_FULL);
 
         /* Commands may alter argc/argv, restore mstate. */
+        /// 恢复mstate原来响应位置的命令
         c->mstate.commands[j].argc = c->argc;
         c->mstate.commands[j].argv = c->argv;
         c->mstate.commands[j].cmd = c->cmd;
     }
+    /// 恢复原来的命令
     c->argv = orig_argv;
     c->argc = orig_argc;
     c->cmd = orig_cmd;
+    /// 完成了这次事务,恢复到初始状态
     discardTransaction(c);
     /* Make sure the EXEC command will be propagated as well if MULTI
      * was already propagated. */
@@ -177,6 +207,7 @@ handle_monitor:
      * MUTLI, EXEC, ... commands inside transaction ...
      * Instead EXEC is flagged as REDIS_CMD_SKIP_MONITOR in the command
      * table, and we do it here with correct ordering. */
+    /// 如果有monitor的话,将命令传给monitor
     if (listLength(server.monitors) && !server.loading)
         replicationFeedMonitors(c,server.monitors,c->db->id,c->argv,c->argc);
 }
@@ -199,6 +230,7 @@ typedef struct watchedKey {
 } watchedKey;
 
 /* Watch for the specified key */
+/// WATCH某个key
 void watchForKey(redisClient *c, robj *key) {
     list *clients = NULL;
     listIter li;
@@ -207,6 +239,7 @@ void watchForKey(redisClient *c, robj *key) {
 
     /* Check if we are already watching for this key */
     listRewind(c->watched_keys,&li);
+    /// 遍历client的watch_key列表,查看是否已经watch了这个key
     while((ln = listNext(&li))) {
         wk = listNodeValue(ln);
         if (wk->db == c->db && equalStringObjects(key,wk->key))
@@ -214,22 +247,26 @@ void watchForKey(redisClient *c, robj *key) {
     }
     /* This key is not already watched in this DB. Let's add it */
     clients = dictFetchValue(c->db->watched_keys,key);
+    /// 如果dict中还没有watch这个key,则创建watch这个key的client列表
     if (!clients) {
         clients = listCreate();
         dictAdd(c->db->watched_keys,key,clients);
         incrRefCount(key);
     }
+    /// 将这个客户端添加到server watch_key列表
     listAddNodeTail(clients,c);
     /* Add the new key to the list of keys watched by this client */
     wk = zmalloc(sizeof(*wk));
     wk->key = key;
     wk->db = c->db;
     incrRefCount(key);
+    /// 同时客户端也保存watch的key已经key所在的db
     listAddNodeTail(c->watched_keys,wk);
 }
 
 /* Unwatch all the keys watched by this client. To clean the EXEC dirty
  * flag is up to the caller. */
+/// unwatch client曾经watch的所有key
 void unwatchAllKeys(redisClient *c) {
     listIter li;
     listNode *ln;
@@ -258,6 +295,7 @@ void unwatchAllKeys(redisClient *c) {
 
 /* "Touch" a key, so that if this key is being WATCHed by some client the
  * next EXEC will fail. */
+/// 当一个watch key发生了变化,则进行touchWatchedKey
 void touchWatchedKey(redisDb *db, robj *key) {
     list *clients;
     listIter li;
@@ -270,6 +308,8 @@ void touchWatchedKey(redisDb *db, robj *key) {
     /* Mark all the clients watching this key as REDIS_DIRTY_CAS */
     /* Check if we are already watching for this key */
     listRewind(clients,&li);
+    /// 将watch这个key的所有client标记为加上REDIS_DIRTY_CAS
+    /// 接下来如果有对这个key进行EXEC,那么将会造成事务失败
     while((ln = listNext(&li))) {
         redisClient *c = listNodeValue(ln);
 
@@ -304,6 +344,7 @@ void touchWatchedKeysOnFlush(int dbid) {
     }
 }
 
+/// WATCH key [key ...]
 void watchCommand(redisClient *c) {
     int j;
 
@@ -311,13 +352,16 @@ void watchCommand(redisClient *c) {
         addReplyError(c,"WATCH inside MULTI is not allowed");
         return;
     }
+    /// 将参数中所有的key watch
     for (j = 1; j < c->argc; j++)
         watchForKey(c,c->argv[j]);
     addReply(c,shared.ok);
 }
 
+/// 将client已经watch的所有key unwatch
 void unwatchCommand(redisClient *c) {
     unwatchAllKeys(c);
+    /// 清空REDIS_DIRTY_CAS标志位
     c->flags &= (~REDIS_DIRTY_CAS);
     addReply(c,shared.ok);
 }
