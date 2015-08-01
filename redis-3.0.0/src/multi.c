@@ -199,7 +199,19 @@ void execCommand(redisClient *c) {
     discardTransaction(c);
     /* Make sure the EXEC command will be propagated as well if MULTI
      * was already propagated. */
-    if (must_propagate) server.dirty++;
+    ///执行这个函数时栈是这样的
+    ///1.execCommand()
+    ///2.call()
+    ///call函数里的部分代码如下
+    ///if (dirty)
+    ///    flags |= (REDIS_PROPAGATE_REPL | REDIS_PROPAGATE_AOF);
+    ///if (flags != REDIS_PROPAGATE_NONE)
+    ///    propagate(c->cmd,c->db->id,c->argv,c->argc,flags);
+    if (must_propagate) 
+    {
+        /// 这样会保证如果上面传递了MULTI到AOF/SLAVE之后,在执行完execCommand之后,栈返回到call时,会将EXEC也传递到AOF/SLAVE中
+        server.dirty++;
+    }
 
 handle_monitor:
     /* Send EXEC to clients waiting data from MONITOR. We do it here
