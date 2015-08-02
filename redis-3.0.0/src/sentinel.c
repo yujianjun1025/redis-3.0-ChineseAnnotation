@@ -51,17 +51,18 @@ typedef struct sentinelAddr {
 } sentinelAddr;
 
 /* A Sentinel Redis Instance object is monitoring. */
+/// SRI:Sentinel Redis Instance
 #define SRI_MASTER  (1<<0)
 #define SRI_SLAVE   (1<<1)
 #define SRI_SENTINEL (1<<2)
 #define SRI_DISCONNECTED (1<<3)
-#define SRI_S_DOWN (1<<4)   /* Subjectively down (no quorum). */
-#define SRI_O_DOWN (1<<5)   /* Objectively down (confirmed by others). */
+#define SRI_S_DOWN (1<<4)   /* Subjectively down (no quorum). */ /// 主观下线(quorum:法定人数)
+#define SRI_O_DOWN (1<<5)   /* Objectively down (confirmed by others). */ /// 客观下线
 #define SRI_MASTER_DOWN (1<<6) /* A Sentinel with this flag set thinks that
                                    its master is down. */
 #define SRI_FAILOVER_IN_PROGRESS (1<<7) /* Failover is in progress for
                                            this master. */  // failover:失效备援
-#define SRI_PROMOTED (1<<8)            /* Slave selected for promotion. */
+#define SRI_PROMOTED (1<<8)            /* Slave selected for promotion. */ /// promotion:提升
 #define SRI_RECONF_SENT (1<<9)     /* SLAVEOF <newmaster> sent. */
 #define SRI_RECONF_INPROG (1<<10)   /* Slave synchronization in progress. */
 #define SRI_RECONF_DONE (1<<11)     /* Slave synchronized with new master. */
@@ -234,6 +235,7 @@ typedef struct redisAeEvents {
     int reading, writing;
 } redisAeEvents;
 
+/// async event读事件函数
 static void redisAeReadEvent(aeEventLoop *el, int fd, void *privdata, int mask) {
     ((void)el); ((void)fd); ((void)mask);
 
@@ -241,6 +243,7 @@ static void redisAeReadEvent(aeEventLoop *el, int fd, void *privdata, int mask) 
     redisAsyncHandleRead(e->context);
 }
 
+/// async event写事件函数
 static void redisAeWriteEvent(aeEventLoop *el, int fd, void *privdata, int mask) {
     ((void)el); ((void)fd); ((void)mask);
 
@@ -248,6 +251,7 @@ static void redisAeWriteEvent(aeEventLoop *el, int fd, void *privdata, int mask)
     redisAsyncHandleWrite(e->context);
 }
 
+/// 添加读事件函数
 static void redisAeAddRead(void *privdata) {
     redisAeEvents *e = (redisAeEvents*)privdata;
     aeEventLoop *loop = e->loop;
@@ -257,6 +261,7 @@ static void redisAeAddRead(void *privdata) {
     }
 }
 
+/// 删除读事件函数
 static void redisAeDelRead(void *privdata) {
     redisAeEvents *e = (redisAeEvents*)privdata;
     aeEventLoop *loop = e->loop;
@@ -266,6 +271,7 @@ static void redisAeDelRead(void *privdata) {
     }
 }
 
+/// 添加写事件函数
 static void redisAeAddWrite(void *privdata) {
     redisAeEvents *e = (redisAeEvents*)privdata;
     aeEventLoop *loop = e->loop;
@@ -275,6 +281,7 @@ static void redisAeAddWrite(void *privdata) {
     }
 }
 
+/// 删除写事件函数
 static void redisAeDelWrite(void *privdata) {
     redisAeEvents *e = (redisAeEvents*)privdata;
     aeEventLoop *loop = e->loop;
@@ -284,6 +291,7 @@ static void redisAeDelWrite(void *privdata) {
     }
 }
 
+/// 删除所有读写事件函数
 static void redisAeCleanup(void *privdata) {
     redisAeEvents *e = (redisAeEvents*)privdata;
     redisAeDelRead(privdata);
@@ -291,6 +299,7 @@ static void redisAeCleanup(void *privdata) {
     zfree(e);
 }
 
+/// 将ac注册到loop上
 static int redisAeAttach(aeEventLoop *loop, redisAsyncContext *ac) {
     redisContext *c = &(ac->c);
     redisAeEvents *e;
@@ -348,6 +357,7 @@ unsigned int dictSdsHash(const void *key);
 int dictSdsKeyCompare(void *privdata, const void *key1, const void *key2);
 void releaseSentinelRedisInstance(sentinelRedisInstance *ri);
 
+/// sentinel dict val专用的值释放函数
 void dictInstancesValDestructor (void *privdata, void *obj) {
     REDIS_NOTUSED(privdata);
     releaseSentinelRedisInstance(obj);
@@ -357,6 +367,7 @@ void dictInstancesValDestructor (void *privdata, void *obj) {
  *
  * also used for: sentinelRedisInstance->sentinels dictionary that maps
  * sentinels ip:port to last seen time in Pub/Sub hello message. */
+/// sentinel instance 专用的dict函数
 dictType instancesDictType = {
     dictSdsHash,               /* hash function */
     NULL,                      /* key dup */
@@ -403,6 +414,7 @@ struct redisCommand sentinelcmds[] = {
 
 /* This function overwrites a few normal Redis config default with Sentinel
  * specific defaults. */
+/// 将sentinel的端口设为默认值:23679
 void initSentinelConfig(void) {
     server.port = REDIS_SENTINEL_PORT;
 }
@@ -413,7 +425,9 @@ void initSentinel(void) {
 
     /* Remove usual Redis commands from the command table, then just add
      * the SENTINEL command. */
+    /// 清空redis命令列表,准备添加sentinel专用的命令(sentinel模式下只能用少量的几个命令)
     dictEmpty(server.commands,NULL);
+    /// 将sentinelcmds中的命令添加到server.commands中
     for (j = 0; j < sizeof(sentinelcmds)/sizeof(sentinelcmds[0]); j++) {
         int retval;
         struct redisCommand *cmd = sentinelcmds+j;
@@ -423,6 +437,8 @@ void initSentinel(void) {
     }
 
     /* Initialize various data structures. */
+    /// 初始化数据结构
+    /// sentinel定义在本文件开始struct sentinelState {} sentinel;
     sentinel.current_epoch = 0;
     sentinel.masters = dictCreate(&instancesDictType,NULL);
     sentinel.tilt = 0;
