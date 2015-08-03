@@ -603,7 +603,7 @@ void sentinelEvent(int level, char *type, sentinelRedisInstance *ri,
     }
 
     /* Call the notification script if applicable. */
-    /// 执行告警脚本
+    /// 执行告警脚本,貌似是异步执行,添加到执行队列后执行的????????
     if (level == REDIS_WARNING && ri != NULL) {
         sentinelRedisInstance *master = (ri->flags & SRI_MASTER) ?
                                          ri : ri->master;
@@ -618,6 +618,7 @@ void sentinelEvent(int level, char *type, sentinelRedisInstance *ri,
  * +monitor event for every configured master. The same events are also
  * generated when a master to monitor is added at runtime via the
  * SENTINEL MONITOR command. */
+/// 这个貌似就是打一条log,告诉我们这个sentinel的信息
 void sentinelGenerateInitialMonitorEvents(void) {
     dictIterator *di;
     dictEntry *de;
@@ -633,6 +634,7 @@ void sentinelGenerateInitialMonitorEvents(void) {
 /* ============================ script execution ============================ */
 
 /* Release a script job structure and all the associated data. */
+/// 释放sentinelScriptJob结构体 
 void sentinelReleaseScriptJob(sentinelScriptJob *sj) {
     int j = 0;
 
@@ -642,6 +644,7 @@ void sentinelReleaseScriptJob(sentinelScriptJob *sj) {
 }
 
 #define SENTINEL_SCRIPT_MAX_ARGS 16
+/// 将path路径(或为函数名/或为lua sha1值),不定参数...的脚本插入到sentinel的脚本队列/链表中,等待执行
 void sentinelScheduleScriptExecution(char *path, ...) {
     va_list ap;
     char *argv[SENTINEL_SCRIPT_MAX_ARGS+1];
@@ -649,6 +652,7 @@ void sentinelScheduleScriptExecution(char *path, ...) {
     sentinelScriptJob *sj;
 
     va_start(ap, path);
+    /// argc从1开始,因为argc[0]要填lua脚本执行的函数,sentinel lua参数最多只有SENTINEL_SCRIPT_MAX_ARGS个
     while(argc < SENTINEL_SCRIPT_MAX_ARGS) {
         argv[argc] = va_arg(ap,char*);
         if (!argv[argc]) break;
@@ -658,6 +662,7 @@ void sentinelScheduleScriptExecution(char *path, ...) {
     va_end(ap);
     argv[0] = sdsnew(path);
 
+    /// 将要执行的脚本和参数保存在sj(sentinelScriptJob结构体中)
     sj = zmalloc(sizeof(*sj));
     sj->flags = SENTINEL_SCRIPT_NONE;
     sj->retry_num = 0;
@@ -666,9 +671,11 @@ void sentinelScheduleScriptExecution(char *path, ...) {
     sj->pid = 0;
     memcpy(sj->argv,argv,sizeof(char*)*(argc+1));
 
+    /// 添加到等待执行脚本的队列尾部
     listAddNodeTail(sentinel.scripts_queue,sj);
 
     /* Remove the oldest non running script if we already hit the limit. */
+    /// sentinel的lua脚本队列/链表超过了SENTINEL_SCRIPT_MAX_QUEUE长度
     if (listLength(sentinel.scripts_queue) > SENTINEL_SCRIPT_MAX_QUEUE) {
         listNode *ln;
         listIter li;
@@ -677,8 +684,10 @@ void sentinelScheduleScriptExecution(char *path, ...) {
         while ((ln = listNext(&li)) != NULL) {
             sj = ln->value;
 
+            /// 脚本若当前正在执行,则跳过
             if (sj->flags & SENTINEL_SCRIPT_RUNNING) continue;
             /* The first node is the oldest as we add on tail. */
+            /// 删除列表中最长时间的脚本,只删一条,所以当长度到达了SENTINEL_SCRIPT_MAX_QUEUE,那么脚本链表中几乎就一直都是SENTINEL_SCRIPT_MAX_QUEUE
             listDelNode(sentinel.scripts_queue,ln);
             sentinelReleaseScriptJob(sj);
             break;
@@ -690,6 +699,7 @@ void sentinelScheduleScriptExecution(char *path, ...) {
 
 /* Lookup a script in the scripts queue via pid, and returns the list node
  * (so that we can easily remove it from the queue if needed). */
+/// 寻找在运行中且pid匹配的脚本
 listNode *sentinelGetScriptListNodeByPid(pid_t pid) {
     listNode *ln;
     listIter li;
@@ -698,6 +708,7 @@ listNode *sentinelGetScriptListNodeByPid(pid_t pid) {
     while ((ln = listNext(&li)) != NULL) {
         sentinelScriptJob *sj = ln->value;
 
+        /// 只有在运行中,pid不为0才有意义
         if ((sj->flags & SENTINEL_SCRIPT_RUNNING) && sj->pid == pid)
             return ln;
     }
