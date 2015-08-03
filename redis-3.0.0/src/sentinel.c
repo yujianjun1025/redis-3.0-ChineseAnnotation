@@ -708,7 +708,7 @@ listNode *sentinelGetScriptListNodeByPid(pid_t pid) {
     while ((ln = listNext(&li)) != NULL) {
         sentinelScriptJob *sj = ln->value;
 
-        /// 只有在运行中,pid不为0才有意义
+        /// 只有在运行中,pid不为0(匹配)才有意义
         if ((sj->flags & SENTINEL_SCRIPT_RUNNING) && sj->pid == pid)
             return ln;
     }
@@ -717,6 +717,7 @@ listNode *sentinelGetScriptListNodeByPid(pid_t pid) {
 
 /* Run pending scripts if we are not already at max number of running
  * scripts. */
+/// 运行等待执行的脚本/进程
 void sentinelRunPendingScripts(void) {
     listNode *ln;
     listIter li;
@@ -725,6 +726,7 @@ void sentinelRunPendingScripts(void) {
     /* Find jobs that are not running and run them, from the top to the
      * tail of the queue, so we run older jobs first. */
     listRewind(sentinel.scripts_queue,&li);
+    /// 每一次最多只能运行SENTINEL_SCRIPT_MAX_RUNNING个
     while (sentinel.running_scripts < SENTINEL_SCRIPT_MAX_RUNNING &&
            (ln = listNext(&li)) != NULL)
     {
@@ -732,31 +734,40 @@ void sentinelRunPendingScripts(void) {
         pid_t pid;
 
         /* Skip if already running. */
+        /// 已经是运行中的脚本
         if (sj->flags & SENTINEL_SCRIPT_RUNNING) continue;
 
         /* Skip if it's a retry, but not enough time has elapsed. */
+        /// 启动时间还未到(貌似是重试启动的脚本)
         if (sj->start_time && sj->start_time > now) continue;
 
+        /// 设置标志位为运行中
         sj->flags |= SENTINEL_SCRIPT_RUNNING;
         sj->start_time = mstime();
         sj->retry_num++;
+        /// 居然要fork()....
         pid = fork();
 
+        /// fork子进程错误
         if (pid == -1) {
             /* Parent (fork error).
              * We report fork errors as signal 99, in order to unify the
              * reporting with other kind of errors. */
+            /// 打印错误log
             sentinelEvent(REDIS_WARNING,"-script-error",NULL,
                           "%s %d %d", sj->argv[0], 99, 0);
+            /// 置错误状态
             sj->flags &= ~SENTINEL_SCRIPT_RUNNING;
             sj->pid = 0;
-        } else if (pid == 0) {
+        } else if (pid == 0) { /// 子进程
             /* Child */
+            /// 执行sj->argv[0]程序,原来不是lua脚本吗????????
             execve(sj->argv[0],sj->argv,environ);
             /* If we are here an error occurred. */
             _exit(2); /* Don't retry execution. */
-        } else {
+        } else { /// 父进程
             sentinel.running_scripts++;
+            /// 保存子进程pid
             sj->pid = pid;
             sentinelEvent(REDIS_DEBUG,"+script-child",NULL,"%ld",(long)pid);
         }
@@ -770,6 +781,7 @@ void sentinelRunPendingScripts(void) {
  * if RETRY_DELAY is set to 30 seconds and the max number of retries is 10
  * starting from the second attempt to execute the script the delays are:
  * 30 sec, 60 sec, 2 min, 4 min, 8 min, 16 min, 32 min, 64 min, 128 min. */
+/// 返回10*2^retry_num,用作重试的延时
 mstime_t sentinelScriptRetryDelay(int retry_num) {
     mstime_t delay = SENTINEL_SCRIPT_RETRY_DELAY;
 
@@ -781,45 +793,62 @@ mstime_t sentinelScriptRetryDelay(int retry_num) {
  * script terminated successfully. If instead the script was terminated by
  * a signal, or returned exit code "1", it is scheduled to run again if
  * the max number of retries did not already elapsed. */
+/// 查看已经运行完成/关闭的子进程/脚本,并在sentinel中做对应的清理/置位工作
 void sentinelCollectTerminatedScripts(void) {
     int statloc;
     pid_t pid;
 
+    /// 等待子进程结束,WNOHANG表示如果没有结束的子进程,则马上返回,不阻塞
     while ((pid = wait3(&statloc,WNOHANG,NULL)) > 0) {
+        /// 拿到子进程退出状态
         int exitcode = WEXITSTATUS(statloc);
         int bysignal = 0;
         listNode *ln;
         sentinelScriptJob *sj;
 
-        if (WIFSIGNALED(statloc)) bysignal = WTERMSIG(statloc);
+        /// 拿到退出信号(如果有的话)
+        if (WIFSIGNALED(statloc)) 
+        {
+            bysignal = WTERMSIG(statloc);
+        }
+        /// 记录子进程的退出状态(返回值,退出信号)
         sentinelEvent(REDIS_DEBUG,"-script-child",NULL,"%ld %d %d",
             (long)pid, exitcode, bysignal);
 
+        /// 取出这个pid在sentinel执行脚本链表中的节点
         ln = sentinelGetScriptListNodeByPid(pid);
+        /// 没有这个pid对应的节点
         if (ln == NULL) {
             redisLog(REDIS_WARNING,"wait3() returned a pid (%ld) we can't find in our scripts execution queue!", (long)pid);
             continue;
         }
+
         sj = ln->value;
 
         /* If the script was terminated by a signal or returns an
          * exit code of "1" (that means: please retry), we reschedule it
          * if the max number of retries is not already reached. */
+        /// 被信号中断或者返回值为1,表示要重试
         if ((bysignal || exitcode == 1) &&
             sj->retry_num != SENTINEL_SCRIPT_MAX_RETRY)
         {
             sj->flags &= ~SENTINEL_SCRIPT_RUNNING;
             sj->pid = 0;
+            /// 重置下次的启动时间
             sj->start_time = mstime() +
                              sentinelScriptRetryDelay(sj->retry_num);
-        } else {
+        } else { /// 这个脚本/子进程已经成功执行完毕,或者重试了SENTINEL_SCRIPT_MAX_RETRY次了
             /* Otherwise let's remove the script, but log the event if the
              * execution did not terminated in the best of the ways. */
+            /// 是那种一直重试但是失败的
             if (bysignal || exitcode != 0) {
                 sentinelEvent(REDIS_WARNING,"-script-error",NULL,
                               "%s %d %d", sj->argv[0], bysignal, exitcode);
             }
+
+            /// 删除脚本/子进程
             listDelNode(sentinel.scripts_queue,ln);
+            /// 清理工作
             sentinelReleaseScriptJob(sj);
             sentinel.running_scripts--;
         }
@@ -828,6 +857,7 @@ void sentinelCollectTerminatedScripts(void) {
 
 /* Kill scripts in timeout, they'll be collected by the
  * sentinelCollectTerminatedScripts() function. */
+/// 清理运行中且超时了的子进程/脚本
 void sentinelKillTimedoutScripts(void) {
     listNode *ln;
     listIter li;
@@ -837,27 +867,33 @@ void sentinelKillTimedoutScripts(void) {
     while ((ln = listNext(&li)) != NULL) {
         sentinelScriptJob *sj = ln->value;
 
+        /// 超时清理
         if (sj->flags & SENTINEL_SCRIPT_RUNNING &&
             (now - sj->start_time) > SENTINEL_SCRIPT_MAX_RUNTIME)
         {
             sentinelEvent(REDIS_WARNING,"-script-timeout",NULL,"%s %ld",
                 sj->argv[0], (long)sj->pid);
+            /// 直接kill
             kill(sj->pid,SIGKILL);
         }
     }
 }
 
 /* Implements SENTINEL PENDING-SCRIPTS command. */
+/// 简单的返回当前sentinel脚本队列/链表的各种状态
 void sentinelPendingScriptsCommand(redisClient *c) {
     listNode *ln;
     listIter li;
 
+    /// 返回脚本/子进程队列/链表的长度
     addReplyMultiBulkLen(c,listLength(sentinel.scripts_queue));
     listRewind(sentinel.scripts_queue,&li);
     while ((ln = listNext(&li)) != NULL) {
         sentinelScriptJob *sj = ln->value;
         int j = 0;
 
+        /// 哪来的自信写死10呢....
+        /// 因为后面就有10个...刚好
         addReplyMultiBulkLen(c,10);
 
         addReplyBulkCString(c,"argv");
@@ -900,10 +936,14 @@ void sentinelPendingScriptsCommand(redisClient *c) {
  *
  * from/to fields are respectively master -> promoted slave addresses for
  * "start" and "end". */
+/// ClientReconf时调用.什么情况是CilentReconf?是不是当master失效,将slave提升为master时的操作????????
 void sentinelCallClientReconfScript(sentinelRedisInstance *master, int role, char *state, sentinelAddr *from, sentinelAddr *to) {
     char fromport[32], toport[32];
 
+    /// 没有配置这个脚本/程序
     if (master->client_reconfig_script == NULL) return;
+
+    /// 执行这个脚本/子进程
     ll2string(fromport,sizeof(fromport),from->port);
     ll2string(toport,sizeof(toport),to->port);
     sentinelScheduleScriptExecution(master->client_reconfig_script,
