@@ -452,14 +452,17 @@ void initSentinel(void) {
 
 /* This function gets called when the server is in Sentinel mode, started,
  * loaded the configuration, and is ready for normal operations. */
+/// sentinel的启动配置检查,初始化等
 void sentinelIsRunning(void) {
     redisLog(REDIS_WARNING,"Sentinel runid is %s", server.runid);
 
+    /// sentinel无配置文件
     if (server.configfile == NULL) {
         redisLog(REDIS_WARNING,
             "Sentinel started without a config file. Exiting...");
+        /// 退出sentinel
         exit(1);
-    } else if (access(server.configfile,W_OK) == -1) {
+    } else if (access(server.configfile,W_OK) == -1) { /// sentinel配置文件无写权限
         redisLog(REDIS_WARNING,
             "Sentinel config file %s is not writable: %s. Exiting...",
             server.configfile,strerror(errno));
@@ -468,6 +471,7 @@ void sentinelIsRunning(void) {
 
     /* We want to generate a +monitor event for every configured master
      * at startup. */
+    /// 这是啥...????????
     sentinelGenerateInitialMonitorEvents();
 }
 
@@ -478,18 +482,23 @@ void sentinelIsRunning(void) {
  *  ENOENT: Can't resolve the hostname.
  *  EINVAL: Invalid port number.
  */
+/// 判断hostname和port的有效性,并返回sentinelAddr
 sentinelAddr *createSentinelAddr(char *hostname, int port) {
     char ip[REDIS_IP_STR_LEN];
     sentinelAddr *sa;
 
+    /// 端口无效
     if (port <= 0 || port > 65535) {
         errno = EINVAL;
         return NULL;
     }
+    /// hostname无效
+    /// anetResolve: hostname -> ip address
     if (anetResolve(NULL,hostname,ip,sizeof(ip)) == ANET_ERR) {
         errno = ENOENT;
         return NULL;
     }
+
     sa = zmalloc(sizeof(*sa));
     sa->ip = sdsnew(ip);
     sa->port = port;
@@ -497,6 +506,7 @@ sentinelAddr *createSentinelAddr(char *hostname, int port) {
 }
 
 /* Return a duplicate of the source address. */
+/// 复制src并返回
 sentinelAddr *dupSentinelAddr(sentinelAddr *src) {
     sentinelAddr *sa;
 
@@ -507,12 +517,14 @@ sentinelAddr *dupSentinelAddr(sentinelAddr *src) {
 }
 
 /* Free a Sentinel address. Can't fail. */
+/// 释放sa
 void releaseSentinelAddr(sentinelAddr *sa) {
     sdsfree(sa->ip);
     zfree(sa);
 }
 
 /* Return non-zero if two addresses are equal. */
+/// 判断sentinelAddr a是否等于b(ip && port)
 int sentinelAddrIsEqual(sentinelAddr *a, sentinelAddr *b) {
     return a->port == b->port && !strcasecmp(a->ip,b->ip);
 }
@@ -543,6 +555,7 @@ int sentinelAddrIsEqual(sentinelAddr *a, sentinelAddr *b) {
  *
  *  Any other specifier after "%@" is processed by printf itself.
  */
+/// sentinel专用的日志
 void sentinelEvent(int level, char *type, sentinelRedisInstance *ri,
                    const char *fmt, ...) {
     va_list ap;
@@ -590,6 +603,7 @@ void sentinelEvent(int level, char *type, sentinelRedisInstance *ri,
     }
 
     /* Call the notification script if applicable. */
+    /// 执行告警脚本
     if (level == REDIS_WARNING && ri != NULL) {
         sentinelRedisInstance *master = (ri->flags & SRI_MASTER) ?
                                          ri : ri->master;
