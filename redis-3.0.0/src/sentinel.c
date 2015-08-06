@@ -2520,6 +2520,7 @@ void sentinelForceHelloUpdateDictOfRedisInstances(dict *instances) {
  * with a period of SENTINEL_PUBLISH_PERIOD milliseconds, however when a
  * Sentinel upgrades a configuration it is a good idea to deliever an update
  * to the other Sentinels ASAP. */
+/// 强制更新与master有关的instance的last_pub_time,使其在下一次事件函数中发送hello msg
 int sentinelForceHelloUpdateForMaster(sentinelRedisInstance *master) {
     if (!(master->flags & SRI_MASTER)) return REDIS_ERR;
     if (master->last_pub_time >= (SENTINEL_PUBLISH_PERIOD+1))
@@ -2534,6 +2535,7 @@ int sentinelForceHelloUpdateForMaster(sentinelRedisInstance *master) {
  *
  * On error zero is returned, and we can't consider the PING command
  * queued in the connection. */
+/// sentinel发送ping
 int sentinelSendPing(sentinelRedisInstance *ri) {
     int retval = redisAsyncCommand(ri->cc,
         sentinelPingReplyCallback, NULL, "PING");
@@ -2542,7 +2544,12 @@ int sentinelSendPing(sentinelRedisInstance *ri) {
         /* We update the ping time only if we received the pong for
          * the previous ping, otherwise we are technically waiting
          * since the first ping that did not received a reply. */
-        if (ri->last_ping_time == 0) ri->last_ping_time = mstime();
+        /// ri->last_ping_time == 0 表示接收到了pong
+        /// ri->last_ping_time != 0 表示发送出了ping,还未收到pong
+        if (ri->last_ping_time == 0) 
+        {
+            ri->last_ping_time = mstime();
+        }
         return 1;
     } else {
         return 0;
@@ -2551,6 +2558,7 @@ int sentinelSendPing(sentinelRedisInstance *ri) {
 
 /* Send periodic PING, INFO, and PUBLISH to the Hello channel to
  * the specified master or slave instance. */
+/// 周期性的发送命令/发送周期性的命令(通过这些命令来获取其他sentinel的状态/通知其他sentinel自己的状态)
 void sentinelSendPeriodicCommands(sentinelRedisInstance *ri) {
     mstime_t now = mstime();
     mstime_t info_period, ping_period;
@@ -2558,6 +2566,7 @@ void sentinelSendPeriodicCommands(sentinelRedisInstance *ri) {
 
     /* Return ASAP if we have already a PING or INFO already pending, or
      * in the case the instance is not properly connected. */
+    /// 已经断开
     if (ri->flags & SRI_DISCONNECTED) return;
 
     /* For INFO, PING, PUBLISH that are not critical commands to send we
@@ -2566,16 +2575,20 @@ void sentinelSendPeriodicCommands(sentinelRedisInstance *ri) {
      * properly (note that anyway there is a redundant protection about this,
      * that is, the link will be disconnected and reconnected if a long
      * timeout condition is detected. */
+    /// 等待回复的命令太多,不执行,直接返回
     if (ri->pending_commands >= SENTINEL_MAX_PENDING_COMMANDS) return;
 
     /* If this is a slave of a master in O_DOWN condition we start sending
      * it INFO every second, instead of the usual SENTINEL_INFO_PERIOD
      * period. In this state we want to closely monitor slaves in case they
      * are turned into masters by another Sentinel, or by the sysadmin. */
+    /// ri是一个slave,且ri的master处于客观下线状态或者SRI_FAILOVER_IN_PROGRESS这个状态
     if ((ri->flags & SRI_SLAVE) &&
         (ri->master->flags & (SRI_O_DOWN|SRI_FAILOVER_IN_PROGRESS))) {
+        /// 特殊状态下,周期较短,为1秒
         info_period = 1000;
     } else {
+        /// 普通的/正常的状态下,周期为10s
         info_period = SENTINEL_INFO_PERIOD;
     }
 
@@ -2585,6 +2598,7 @@ void sentinelSendPeriodicCommands(sentinelRedisInstance *ri) {
     ping_period = ri->down_after_period;
     if (ping_period > SENTINEL_PING_PERIOD) ping_period = SENTINEL_PING_PERIOD;
 
+    /// 不是SRI_SENTINEL且到了发送info的周期
     if ((ri->flags & SRI_SENTINEL) == 0 &&
         (ri->info_refresh == 0 ||
         (now - ri->info_refresh) > info_period))
@@ -2595,9 +2609,11 @@ void sentinelSendPeriodicCommands(sentinelRedisInstance *ri) {
         if (retval == REDIS_OK) ri->pending_commands++;
     } else if ((now - ri->last_pong_time) > ping_period) {
         /* Send PING to all the three kinds of instances. */
+        /// 发送ping
         sentinelSendPing(ri);
     } else if ((now - ri->last_pub_time) > SENTINEL_PUBLISH_PERIOD) {
         /* PUBLISH hello messages to all the three kinds of instances. */
+        /// 发送hello
         sentinelSendHello(ri);
     }
 }
