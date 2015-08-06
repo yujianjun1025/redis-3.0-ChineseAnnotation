@@ -205,7 +205,7 @@ struct sentinelState {
     mstime_t previous_time;     /* Last time we ran the time handler. */
     list *scripts_queue;    /* Queue of user scripts to execute. */
     char *announce_ip;      /* IP addr that is gossiped to other sentinels if
-                               not NULL. */
+                               not NULL. */ /// 这个ip是要向其他sentinel宣称/告知的
     int announce_port;      /* Port that is gossiped to other sentinels if
                                non zero. */
 } sentinel;
@@ -2408,11 +2408,13 @@ cleanup:
 
 /* This is our Pub/Sub callback for the Hello channel. It's useful in order
  * to discover other sentinels attached at the same master. */
+/// 接收到其他sentinel发送的hello msg时的回调函数(所有的sentinel都订阅了hello频道)
 void sentinelReceiveHelloMessages(redisAsyncContext *c, void *reply, void *privdata) {
     sentinelRedisInstance *ri = c->data;
     redisReply *r;
     REDIS_NOTUSED(privdata);
 
+    /// 空数据或者无sentinelRedisInstance
     if (!reply || !ri) return;
     r = reply;
 
@@ -2423,6 +2425,7 @@ void sentinelReceiveHelloMessages(redisAsyncContext *c, void *reply, void *privd
 
     /* Sanity check in the reply we expect, so that the code that follows
      * can avoid to check for details. */
+    /// 接收到的信息错误
     if (r->type != REDIS_REPLY_ARRAY ||
         r->elements != 3 ||
         r->element[0]->type != REDIS_REPLY_STRING ||
@@ -2433,6 +2436,7 @@ void sentinelReceiveHelloMessages(redisAsyncContext *c, void *reply, void *privd
     /* We are not interested in meeting ourselves */
     if (strstr(r->element[2]->str,server.runid) != NULL) return;
 
+    /// 处理接收到的hello message
     sentinelProcessHelloMessage(r->element[2]->str, r->element[2]->len);
 }
 
@@ -2447,6 +2451,7 @@ void sentinelReceiveHelloMessages(redisAsyncContext *c, void *reply, void *privd
  *
  * Returns REDIS_OK if the PUBLISH was queued correctly, otherwise
  * REDIS_ERR is returned. */
+/// 发送hello命令 当前sentinel的信息和master的信息
 int sentinelSendHello(sentinelRedisInstance *ri) {
     char ip[REDIS_IP_STR_LEN];
     char payload[REDIS_IP_STR_LEN+1024];
@@ -2462,7 +2467,7 @@ int sentinelSendHello(sentinelRedisInstance *ri) {
      * obtain our own IP address. */
     if (sentinel.announce_ip) {
         announce_ip = sentinel.announce_ip;
-    } else {
+    } else { /// 读取fd(sock描述符上的ip信息)
         if (anetSockName(ri->cc->c.fd,ip,sizeof(ip),NULL) == -1)
             return REDIS_ERR;
         announce_ip = ip;
@@ -2471,6 +2476,7 @@ int sentinelSendHello(sentinelRedisInstance *ri) {
                     sentinel.announce_port : server.port;
 
     /* Format and send the Hello message. */
+    /// 格式化sentinel信息
     snprintf(payload,sizeof(payload),
         "%s,%d,%s,%llu," /* Info about this sentinel. */
         "%s,%s,%d,%llu", /* Info about current master. */
@@ -2479,6 +2485,7 @@ int sentinelSendHello(sentinelRedisInstance *ri) {
         /* --- */
         master->name,master_addr->ip,master_addr->port,
         (unsigned long long) master->config_epoch);
+    /// PUBLISH这条hello消息
     retval = redisAsyncCommand(ri->cc,
         sentinelPublishReplyCallback, NULL, "PUBLISH %s %s",
             SENTINEL_HELLO_CHANNEL,payload);
@@ -2489,6 +2496,7 @@ int sentinelSendHello(sentinelRedisInstance *ri) {
 
 /* Reset last_pub_time in all the instances in the specified dictionary
  * in order to force the delivery of an Hello update ASAP. */
+/// 强制更新instances下所有的ri,使其下一次循环中全部发送hello msg
 void sentinelForceHelloUpdateDictOfRedisInstances(dict *instances) {
     dictIterator *di;
     dictEntry *de;
@@ -2496,6 +2504,8 @@ void sentinelForceHelloUpdateDictOfRedisInstances(dict *instances) {
     di = dictGetSafeIterator(instances);
     while((de = dictNext(di)) != NULL) {
         sentinelRedisInstance *ri = dictGetVal(de);
+        /// 不知道有啥用,但好像是强制在下一个周期更新hello????????
+        /// 这个分支肯定会进入的mstime() 总是 > 2000 + 1
         if (ri->last_pub_time >= (SENTINEL_PUBLISH_PERIOD+1))
             ri->last_pub_time -= (SENTINEL_PUBLISH_PERIOD+1);
     }
