@@ -3261,9 +3261,13 @@ void sentinelPublishCommand(redisClient *c) {
 /* ===================== SENTINEL availability checks ======================= */
 
 /* Is this instance down from our point of view? */
+/// 判断是否处于SubjectivelyDown(主观下线)
+/// 这里面有很多状态和判断都不太明确????????
 void sentinelCheckSubjectivelyDown(sentinelRedisInstance *ri) {
     mstime_t elapsed = 0;
 
+    /// 如果last_ping_time == 0,说明没有正在等待pong的已经发送出去的ping
+    /// 如果last_ping_time != 0,说明有延迟,计算延迟时间
     if (ri->last_ping_time)
         elapsed = mstime() - ri->last_ping_time;
 
@@ -3329,34 +3333,43 @@ void sentinelCheckSubjectivelyDown(sentinelRedisInstance *ri) {
  * reported in a given time range that the instance was not reachable.
  * However messages can be delayed so there are no strong guarantees about
  * N instances agreeing at the same time about the down state. */
+/// 判断master是否处于客观下线状态
 void sentinelCheckObjectivelyDown(sentinelRedisInstance *master) {
     dictIterator *di;
     dictEntry *de;
     unsigned int quorum = 0, odown = 0;
 
+    /// master本身为主观下线
     if (master->flags & SRI_S_DOWN) {
         /* Is down for enough sentinels? */
+        /// 自己是一个法人,判断自己当前下线 
         quorum = 1; /* the current sentinel. */
         /* Count all the other sentinels. */
         di = dictGetIterator(master->sentinels);
+        /// 遍历所有观察这台master的sentinel
         while((de = dictNext(di)) != NULL) {
             sentinelRedisInstance *ri = dictGetVal(de);
 
+            /// 增加认为master下线的法人数
             if (ri->flags & SRI_MASTER_DOWN) quorum++;
         }
         dictReleaseIterator(di);
+        /// 有足够的法定人数认为master下线
         if (quorum >= master->quorum) odown = 1;
     }
 
     /* Set the flag accordingly to the outcome. */
+    /// 设下线状态
     if (odown) {
+        /// 第一次下线要设标记位,记录事件,检查日志
         if ((master->flags & SRI_O_DOWN) == 0) {
             sentinelEvent(REDIS_WARNING,"+odown",master,"%@ #quorum %d/%d",
                 quorum, master->quorum);
             master->flags |= SRI_O_DOWN;
             master->o_down_since_time = mstime();
         }
-    } else {
+    } else { /// 解除下线状态
+        /// 第一次解除要清除标记位,记录事件
         if (master->flags & SRI_O_DOWN) {
             sentinelEvent(REDIS_WARNING,"-odown",master,"%@");
             master->flags &= ~SRI_O_DOWN;
@@ -3366,6 +3379,7 @@ void sentinelCheckObjectivelyDown(sentinelRedisInstance *master) {
 
 /* Receive the SENTINEL is-master-down-by-addr reply, see the
  * sentinelAskMasterStateToOtherSentinels() function for more information. */
+/// 接收到master is down的回调函数,reply格式:[1/0(标识是否down)],[new leader name],[new leader epoch]
 void sentinelReceiveIsMasterDownReply(redisAsyncContext *c, void *reply, void *privdata) {
     sentinelRedisInstance *ri = c->data;
     redisReply *r;
@@ -3378,26 +3392,34 @@ void sentinelReceiveIsMasterDownReply(redisAsyncContext *c, void *reply, void *p
     /* Ignore every error or unexpected reply.
      * Note that if the command returns an error for any reason we'll
      * end clearing the SRI_MASTER_DOWN flag for timeout anyway. */
+    /// 检查reply格式
     if (r->type == REDIS_REPLY_ARRAY && r->elements == 3 &&
         r->element[0]->type == REDIS_REPLY_INTEGER &&
         r->element[1]->type == REDIS_REPLY_STRING &&
         r->element[2]->type == REDIS_REPLY_INTEGER)
     {
         ri->last_master_down_reply_time = mstime();
+        /// 1 表示master已经下线
         if (r->element[0]->integer == 1) {
             ri->flags |= SRI_MASTER_DOWN;
         } else {
             ri->flags &= ~SRI_MASTER_DOWN;
         }
+        /// r->element[1]->str != "*"
         if (strcmp(r->element[1]->str,"*")) {
             /* If the runid in the reply is not "*" the Sentinel actually
              * replied with a vote. */
+            /// 将旧的leader删除
             sdsfree(ri->leader);
             if ((long long)ri->leader_epoch != r->element[2]->integer)
+            {
+                /// ri->name 投票给了 r->elememt[1]->str的r->elememt[2]->integer epoch
                 redisLog(REDIS_WARNING,
-                    "%s voted for %s %llu", ri->name,
+                    "%s voted for %s %llu", ri->name, /// vote:投票
                     r->element[1]->str,
                     (unsigned long long) r->element[2]->integer);
+            }
+            /// 设置新的leader/leader_epoch
             ri->leader = sdsnew(r->element[1]->str);
             ri->leader_epoch = r->element[2]->integer;
         }
@@ -3409,6 +3431,7 @@ void sentinelReceiveIsMasterDownReply(redisAsyncContext *c, void *reply, void *p
  * in order to get the replies that allow to reach the quorum
  * needed to mark the master in ODOWN state and trigger a failover. */
 #define SENTINEL_ASK_FORCED (1<<0)
+/// 依次询问所有的master->sentinel,master当前的状态
 void sentinelAskMasterStateToOtherSentinels(sentinelRedisInstance *master, int flags) {
     dictIterator *di;
     dictEntry *de;
@@ -3432,6 +3455,7 @@ void sentinelAskMasterStateToOtherSentinels(sentinelRedisInstance *master, int f
          * 1) We believe it is down, or there is a failover in progress.
          * 2) Sentinel is connected.
          * 3) We did not received the info within SENTINEL_ASK_PERIOD ms. */
+        /// 下面的这三个条件不太懂????????
         if ((master->flags & SRI_S_DOWN) == 0) continue;
         if (ri->flags & SRI_DISCONNECTED) continue;
         if (!(flags & SENTINEL_ASK_FORCED) &&
@@ -3439,6 +3463,8 @@ void sentinelAskMasterStateToOtherSentinels(sentinelRedisInstance *master, int f
             continue;
 
         /* Ask */
+        /// 查询master.sentinel里面每一个sentinel观察到的master的状态
+        /// 由此推断,这个函数肯定会被循环调用,因为每一个sentinel都需要知道其他sentinel的状态
         ll2string(port,sizeof(port),master->addr->port);
         retval = redisAsyncCommand(ri->cc,
                     sentinelReceiveIsMasterDownReply, NULL,
@@ -3459,7 +3485,9 @@ void sentinelAskMasterStateToOtherSentinels(sentinelRedisInstance *master, int f
  *
  * If a vote is not available returns NULL, otherwise return the Sentinel
  * runid and populate the leader_epoch with the epoch of the vote. */
+/// 选举master的leader,有些地方不太懂
 char *sentinelVoteLeader(sentinelRedisInstance *master, uint64_t req_epoch, char *req_runid, uint64_t *leader_epoch) {
+    /// 保存新的epoch数,刷新配置
     if (req_epoch > sentinel.current_epoch) {
         sentinel.current_epoch = req_epoch;
         sentinelFlushConfig();
@@ -3467,6 +3495,7 @@ char *sentinelVoteLeader(sentinelRedisInstance *master, uint64_t req_epoch, char
             (unsigned long long) sentinel.current_epoch);
     }
 
+    /// 当前的leader的epoch小于req_epoch,重新设定leader
     if (master->leader_epoch < req_epoch && sentinel.current_epoch <= req_epoch)
     {
         sdsfree(master->leader);
@@ -3478,6 +3507,7 @@ char *sentinelVoteLeader(sentinelRedisInstance *master, uint64_t req_epoch, char
         /* If we did not voted for ourselves, set the master failover start
          * time to now, in order to force a delay before we can start a
          * failover for the same master. */
+        /// 不是选中自己,这里不太懂????????
         if (strcasecmp(master->leader,server.runid))
             master->failover_start_time = mstime()+rand()%SENTINEL_MAX_DESYNC;
     }
@@ -3493,6 +3523,7 @@ struct sentinelLeader {
 
 /* Helper function for sentinelGetLeader, increment the counter
  * relative to the specified runid. */
+/// 将counters里的runid的leader.votes+1
 int sentinelLeaderIncr(dict *counters, char *runid) {
     dictEntry *de = dictFind(counters,runid);
     uint64_t oldval;
@@ -3515,6 +3546,7 @@ int sentinelLeaderIncr(dict *counters, char *runid) {
  * To be a leader for a given epoch, we should have the majority of
  * the Sentinels we know (ever seen since the last SENTINEL RESET) that
  * reported the same instance as leader for the same epoch. */
+/// epoch到底是什么鬼????????
 char *sentinelGetLeader(sentinelRedisInstance *master, uint64_t epoch) {
     dict *counters;
     dictIterator *di;
@@ -3525,17 +3557,23 @@ char *sentinelGetLeader(sentinelRedisInstance *master, uint64_t epoch) {
     uint64_t leader_epoch;
     uint64_t max_votes = 0;
 
+    /// 一定要是这两个状态啊....
     redisAssert(master->flags & (SRI_O_DOWN|SRI_FAILOVER_IN_PROGRESS));
     counters = dictCreate(&leaderVotesDictType,NULL);
 
+    /// 拿出投票者(所有的master),+1表示自己
     voters = dictSize(master->sentinels)+1; /* All the other sentinels and me. */
 
     /* Count other sentinels votes */
     di = dictGetIterator(master->sentinels);
     while((de = dictNext(di)) != NULL) {
         sentinelRedisInstance *ri = dictGetVal(de);
+        /// ri->leader_epoch == sentinel.current_epoch ????????
         if (ri->leader != NULL && ri->leader_epoch == sentinel.current_epoch)
+        {
+            /// 这一步进行完了,counters里的->voters == 1吧????????
             sentinelLeaderIncr(counters,ri->leader);
+        }
     }
     dictReleaseIterator(di);
 
@@ -3543,9 +3581,11 @@ char *sentinelGetLeader(sentinelRedisInstance *master, uint64_t epoch) {
      * 1) Absolute majority between voters (50% + 1).
      * 2) And anyway at least master->quorum votes. */
     di = dictGetIterator(counters);
+    /// 遍历counters
     while((de = dictNext(di)) != NULL) {
         uint64_t votes = dictGetUnsignedIntegerVal(de);
 
+        /// 记录获得最多投票的master和投票数
         if (votes > max_votes) {
             max_votes = votes;
             winner = dictGetKey(de);
@@ -3556,9 +3596,10 @@ char *sentinelGetLeader(sentinelRedisInstance *master, uint64_t epoch) {
     /* Count this Sentinel vote:
      * if this Sentinel did not voted yet, either vote for the most
      * common voted sentinel, or for itself if no vote exists at all. */
+    /// 将winter设为leader
     if (winner)
         myvote = sentinelVoteLeader(master,epoch,winner,&leader_epoch);
-    else
+    else /// 是将自己设为leader????????
         myvote = sentinelVoteLeader(master,epoch,server.runid,&leader_epoch);
 
     if (myvote && leader_epoch == epoch) {
@@ -3590,6 +3631,7 @@ char *sentinelGetLeader(sentinelRedisInstance *master, uint64_t epoch) {
  * The command returns REDIS_OK if the SLAVEOF command was accepted for
  * (later) delivery otherwise REDIS_ERR. The command replies are just
  * discarded. */
+/// 将ri作为host:port的slave
 int sentinelSendSlaveOf(sentinelRedisInstance *ri, char *host, int port) {
     char portstr[32];
     int retval;
@@ -3598,6 +3640,7 @@ int sentinelSendSlaveOf(sentinelRedisInstance *ri, char *host, int port) {
 
     /* If host is NULL we send SLAVEOF NO ONE that will turn the instance
      * into a master. */
+    /// SLAVEOF NO ONE,自己将成为一个master
     if (host == NULL) {
         host = "NO";
         memcpy(portstr,"ONE",4);
@@ -3613,6 +3656,7 @@ int sentinelSendSlaveOf(sentinelRedisInstance *ri, char *host, int port) {
      *
      * Note that we don't check the replies returned by commands, since we
      * will observe instead the effects in the next INFO output. */
+    /// 以一个事务(连续的命令)进行提交
     retval = redisAsyncCommand(ri->cc,
         sentinelDiscardReplyCallback, NULL, "MULTI");
     if (retval == REDIS_ERR) return retval;
@@ -3633,11 +3677,13 @@ int sentinelSendSlaveOf(sentinelRedisInstance *ri, char *host, int port) {
      * an issue because CLIENT is variadic command, so Redis will not
      * recognized as a syntax error, and the transaction will not fail (but
      * only the unsupported command will fail). */
+    /// 这里为什么要kill normal clients????????
     retval = redisAsyncCommand(ri->cc,
         sentinelDiscardReplyCallback, NULL, "CLIENT KILL TYPE normal");
     if (retval == REDIS_ERR) return retval;
     ri->pending_commands++;
 
+    /// 提交事务,执行批量命令
     retval = redisAsyncCommand(ri->cc,
         sentinelDiscardReplyCallback, NULL, "EXEC");
     if (retval == REDIS_ERR) return retval;
