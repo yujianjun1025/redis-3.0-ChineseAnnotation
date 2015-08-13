@@ -52,6 +52,7 @@ typedef struct sentinelAddr {
 
 /* A Sentinel Redis Instance object is monitoring. */
 /// SRI:Sentinel Redis Instance
+/// sentinel状态定义
 #define SRI_MASTER  (1<<0)
 #define SRI_SLAVE   (1<<1)
 #define SRI_SENTINEL (1<<2)
@@ -70,6 +71,7 @@ typedef struct sentinelAddr {
 #define SRI_SCRIPT_KILL_SENT (1<<13) /* SCRIPT KILL already sent on -BUSY */
 
 /* Note: times are in milliseconds. */
+/// 各种时间:单位ms
 #define SENTINEL_INFO_PERIOD 10000
 #define SENTINEL_PING_PERIOD 1000
 #define SENTINEL_ASK_PERIOD 1000
@@ -88,6 +90,7 @@ typedef struct sentinelAddr {
 #define SENTINEL_MAX_DESYNC 1000
 
 /* Failover machine different states. */
+/// failover的状态,这从上到下貌似就是启动failover的状态变化过程
 #define SENTINEL_FAILOVER_STATE_NONE 0  /* No failover in progress. */
 #define SENTINEL_FAILOVER_STATE_WAIT_START 1  /* Wait for failover_start_time*/
 #define SENTINEL_FAILOVER_STATE_SELECT_SLAVE 2 /* Select slave to promote */
@@ -120,10 +123,10 @@ typedef struct sentinelRedisInstance {
     int flags;      /* See SRI_... defines */
     char *name;     /* Master name from the point of view of this sentinel. */
     char *runid;    /* run ID of this instance. */
-    uint64_t config_epoch;  /* Configuration epoch. */
+    uint64_t config_epoch;  /* Configuration epoch. */ /// 这个东西貌似是自增的,每一个sentinelRedisInstance都是唯一的
     sentinelAddr *addr; /* Master host. */
     redisAsyncContext *cc; /* Hiredis context for commands. */
-    redisAsyncContext *pc; /* Hiredis context for Pub / Sub. */
+    redisAsyncContext *pc; /* Hiredis context for Pub / Sub. */ /// 这里要用两个连接的原因还未明确
     int pending_commands;   /* Number of commands sent waiting for a reply. */
     mstime_t cc_conn_time; /* cc connection time. */
     mstime_t pc_conn_time; /* pc connection time. */
@@ -174,6 +177,7 @@ typedef struct sentinelRedisInstance {
     int slave_master_link_status; /* Master link status as reported by INFO */
     unsigned long long slave_repl_offset; /* Slave replication offset. */
     /* Failover */
+    /// 保存可以操作failover的sentinel的runid
     char *leader;       /* If this is a master instance, this is the runid of
                            the Sentinel that should perform the failover. If
                            this is a Sentinel, this is the runid of the Sentinel
@@ -196,7 +200,7 @@ typedef struct sentinelRedisInstance {
 /* Main state. */
 struct sentinelState {
     uint64_t current_epoch;     /* Current epoch. */
-    dict *masters;      /* Dictionary of master sentinelRedisInstances.
+    dict *masters;      /* Dictionary of master sentinelRedisInstances. /// 所有监视master的sentinel都会在这
                            Key is the instance name, value is the
                            sentinelRedisInstance structure pointer. */
     int tilt;           /* Are we in TILT mode? */
@@ -398,6 +402,7 @@ void sentinelSetCommand(redisClient *c);
 void sentinelPublishCommand(redisClient *c);
 void sentinelRoleCommand(redisClient *c);
 
+/// 连接到sentinel的客户端只能用这几个命令
 struct redisCommand sentinelcmds[] = {
     {"ping",pingCommand,1,"",0,NULL,0,0,0,0,0},
     {"sentinel",sentinelCommand,-2,"",0,NULL,0,0,0,0,0},
@@ -420,6 +425,7 @@ void initSentinelConfig(void) {
 }
 
 /* Perform the Sentinel mode initialization. */
+/// 初始化sentinel
 void initSentinel(void) {
     unsigned int j;
 
@@ -471,7 +477,7 @@ void sentinelIsRunning(void) {
 
     /* We want to generate a +monitor event for every configured master
      * at startup. */
-    /// 这是啥...????????
+    /// 记录一条这个sentinel启动的信息
     sentinelGenerateInitialMonitorEvents();
 }
 
@@ -482,7 +488,7 @@ void sentinelIsRunning(void) {
  *  ENOENT: Can't resolve the hostname.
  *  EINVAL: Invalid port number.
  */
-/// 判断hostname和port的有效性,并返回sentinelAddr
+/// 判断hostname和port的有效性,若有效,返回新建的sentinelAddr
 sentinelAddr *createSentinelAddr(char *hostname, int port) {
     char ip[REDIS_IP_STR_LEN];
     sentinelAddr *sa;
@@ -556,6 +562,7 @@ int sentinelAddrIsEqual(sentinelAddr *a, sentinelAddr *b) {
  *  Any other specifier after "%@" is processed by printf itself.
  */
 /// sentinel专用的日志
+/// 且会发布消息到type频道,如果level是WARNING,且会执行notification_script
 void sentinelEvent(int level, char *type, sentinelRedisInstance *ri,
                    const char *fmt, ...) {
     va_list ap;
@@ -563,6 +570,8 @@ void sentinelEvent(int level, char *type, sentinelRedisInstance *ri,
     robj *channel, *payload;
 
     /* Handle %@ */
+    /// '%@'表示将[sentinel_type name ip port]@[name ip port]打印出来
+    ///           [-----------  ri ----------]@[-ri->master-](如果有master的话)
     if (fmt[0] == '%' && fmt[1] == '@') {
         sentinelRedisInstance *master = (ri->flags & SRI_MASTER) ?
                                          NULL : ri->master;
@@ -597,13 +606,14 @@ void sentinelEvent(int level, char *type, sentinelRedisInstance *ri,
     if (level != REDIS_DEBUG) {
         channel = createStringObject(type,strlen(type));
         payload = createStringObject(msg,strlen(msg));
+        /// 发布消息
         pubsubPublishMessage(channel,payload);
         decrRefCount(channel);
         decrRefCount(payload);
     }
 
     /* Call the notification script if applicable. */
-    /// 执行告警脚本,貌似是异步执行,添加到执行队列后执行的????????
+    /// 执行notification_script脚本(如果有的话)
     if (level == REDIS_WARNING && ri != NULL) {
         sentinelRedisInstance *master = (ri->flags & SRI_MASTER) ?
                                          ri : ri->master;
@@ -618,7 +628,7 @@ void sentinelEvent(int level, char *type, sentinelRedisInstance *ri,
  * +monitor event for every configured master. The same events are also
  * generated when a master to monitor is added at runtime via the
  * SENTINEL MONITOR command. */
-/// 这个貌似就是打一条log,告诉我们这个sentinel的信息
+/// 这个代码看到懂...但仿佛没啥作用
 void sentinelGenerateInitialMonitorEvents(void) {
     dictIterator *di;
     dictEntry *de;
