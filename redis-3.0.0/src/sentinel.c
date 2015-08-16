@@ -654,7 +654,7 @@ void sentinelReleaseScriptJob(sentinelScriptJob *sj) {
 }
 
 #define SENTINEL_SCRIPT_MAX_ARGS 16
-/// 将path路径(或为函数名/或为lua sha1值),不定参数...的脚本插入到sentinel的脚本队列/链表中,等待执行
+/// 将path路径的脚本,不定参数...的脚本插入到sentinel的脚本队列/链表中,等待执行
 void sentinelScheduleScriptExecution(char *path, ...) {
     va_list ap;
     char *argv[SENTINEL_SCRIPT_MAX_ARGS+1];
@@ -748,13 +748,13 @@ void sentinelRunPendingScripts(void) {
         if (sj->flags & SENTINEL_SCRIPT_RUNNING) continue;
 
         /* Skip if it's a retry, but not enough time has elapsed. */
-        /// 启动时间还未到(貌似是重试启动的脚本)
+        /// 启动时间还未到(上一次启动失败的,会在一段时间后重试,这里就是这种情况,但启动时间还未到)
         if (sj->start_time && sj->start_time > now) continue;
 
         /// 设置标志位为运行中
         sj->flags |= SENTINEL_SCRIPT_RUNNING;
         sj->start_time = mstime();
-        sj->retry_num++;
+        sj->retry_num++; /// 每一次尝试启动都+1,当然,一般都是1,因为执行一次就成功了
         /// 居然要fork()....
         pid = fork();
 
@@ -822,6 +822,8 @@ void sentinelCollectTerminatedScripts(void) {
             bysignal = WTERMSIG(statloc);
         }
         /// 记录子进程的退出状态(返回值,退出信号)
+        /// sentinelEvent里面,"-xxxx":表示事件退出
+        ///                   "+xxxx":表示事件进入
         sentinelEvent(REDIS_DEBUG,"-script-child",NULL,"%ld %d %d",
             (long)pid, exitcode, bysignal);
 
@@ -1015,15 +1017,15 @@ sentinelRedisInstance *createSentinelRedisInstance(char *name, int flags, char *
     /// 根据flage,选择sentinel中对应的dict(table)
     if (flags & SRI_MASTER) 
     {
-        table = sentinel.masters;
+        table = sentinel.masters; /// sentinel.masters 存放所有的master节点
     }
     else if (flags & SRI_SLAVE) 
     {
-        table = master->slaves;
+        table = master->slaves; /// master->slaves 存放master的所有slave节点
     }
     else if (flags & SRI_SENTINEL) 
     {
-        table = master->sentinels;
+        table = master->sentinels; /// master->sentinels 存放其他观察同一个master的sentinel节点
     }
 
     sdsname = sdsnew(name);
@@ -1040,9 +1042,9 @@ sentinelRedisInstance *createSentinelRedisInstance(char *name, int flags, char *
      * the event loop will take care of connecting them. */
     /// 初始化sentinel状态 
     ri->flags = flags | SRI_DISCONNECTED; /// 创建时状态为未连接
-    ri->name = sdsname;
+    ri->name = sdsname; /// 保存节点的名字
     ri->runid = NULL;
-    ri->config_epoch = 0;
+    ri->config_epoch = 0; /// config_epoch刚创建时都是0
     ri->addr = addr;
     ri->cc = NULL;
     ri->pc = NULL;
@@ -1063,10 +1065,10 @@ sentinelRedisInstance *createSentinelRedisInstance(char *name, int flags, char *
     ri->s_down_since_time = 0;
     ri->o_down_since_time = 0;
     ri->down_after_period = master ? master->down_after_period :
-                            SENTINEL_DEFAULT_DOWN_AFTER;
+                            SENTINEL_DEFAULT_DOWN_AFTER; /// 初始化时down_after_period设置:slave跟随master的时间,master设为30s
     ri->master_link_down_time = 0;
     ri->auth_pass = NULL;
-    ri->slave_priority = SENTINEL_DEFAULT_SLAVE_PRIORITY;
+    ri->slave_priority = SENTINEL_DEFAULT_SLAVE_PRIORITY; /// slave默认的优先级为100
     ri->slave_reconf_sent_time = 0;
     ri->slave_master_host = NULL;
     ri->slave_master_port = 0;
@@ -1093,12 +1095,13 @@ sentinelRedisInstance *createSentinelRedisInstance(char *name, int flags, char *
     ri->client_reconfig_script = NULL;
 
     /* Role */
-    ri->role_reported = ri->flags & (SRI_MASTER|SRI_SLAVE);
+    ri->role_reported = ri->flags & (SRI_MASTER|SRI_SLAVE); /// 记录自己的身份是MASTER还是SLAVE
     ri->role_reported_time = mstime();
     ri->slave_conf_change_time = mstime();
 
     /* Add into the right table. */
     /// 插入到正确的dict(table)中
+    /// key:name val:ri
     dictAdd(table, ri->name, ri);
     return ri;
 }
@@ -1119,6 +1122,7 @@ void releaseSentinelRedisInstance(sentinelRedisInstance *ri) {
     if (ri->pc) sentinelKillLink(ri,ri->pc);
 
     /* Free other resources. */
+    /// 释放需要释放的结构体
     sdsfree(ri->name);
     sdsfree(ri->runid);
     sdsfree(ri->notification_script);
@@ -1129,7 +1133,6 @@ void releaseSentinelRedisInstance(sentinelRedisInstance *ri) {
     releaseSentinelAddr(ri->addr);
 
     /* Clear state into the master if needed. */
-    /// 如果是当前节点是slave提升为master的,将对应的需要清理的数据清理
     if ((ri->flags & SRI_SLAVE) && (ri->flags & SRI_PROMOTED) && ri->master)
         ri->master->promoted_slave = NULL;
 
@@ -1144,7 +1147,7 @@ sentinelRedisInstance *sentinelRedisInstanceLookupSlave(
     sds key;
     sentinelRedisInstance *slave;
 
-    /// 一定是master才有slave节点啊
+    /// 一定是master才有slave节点
     redisAssert(ri->flags & SRI_MASTER);
     key = sdscatprintf(sdsempty(),
         strchr(ip,':') ? "[%s]:%d" : "%s:%d",
@@ -1181,6 +1184,7 @@ const char *sentinelRedisInstanceTypeStr(sentinelRedisInstance *ri) {
  *
  * The function returns the number of Sentinels removed. */
 /// 从master中删除ip:port或者runid匹配的sentinel节点,返回删除的个数
+/// 保证一个master下面没有重复的slave节点,因为重复的slave节点可能会对quorum,下线选举产生不公平
 int removeMatchingSentinelsFromMaster(sentinelRedisInstance *master, char *ip, int port, char *runid) {
     dictIterator *di;
     dictEntry *de;
@@ -1234,7 +1238,7 @@ sentinelRedisInstance *getSentinelRedisInstanceByAddrAndRunID(dict *instances, c
 }
 
 /* Master lookup by name */
-/// 从sentinel中取出名为name的sentinelRedisInstance
+/// 从sentinel.master中取出名为name的sentinelRedisInstance,这里取出的是一个名为name的master节点
 sentinelRedisInstance *sentinelGetMasterByName(char *name) {
     sentinelRedisInstance *ri;
     sds sdsname = sdsnew(name);
@@ -1283,9 +1287,11 @@ void sentinelDelFlagsToDictOfRedisInstances(dict *instances, int flags) {
  */
 
 #define SENTINEL_RESET_NO_SENTINELS (1<<0)
-/// 将ri(ri为master)根据flags进行reset,还有点不太清楚????????
+/// 将ri(ri为master)根据flags进行reset,回复到初始化状态
 void sentinelResetMaster(sentinelRedisInstance *ri, int flags) {
+    /// 一定有master标记位
     redisAssert(ri->flags & SRI_MASTER);
+
     dictRelease(ri->slaves);
     ri->slaves = dictCreate(&instancesDictType,NULL);
     if (!(flags & SENTINEL_RESET_NO_SENTINELS)) {
@@ -1294,7 +1300,7 @@ void sentinelResetMaster(sentinelRedisInstance *ri, int flags) {
     }
     if (ri->cc) sentinelKillLink(ri,ri->cc);
     if (ri->pc) sentinelKillLink(ri,ri->pc);
-    ri->flags &= SRI_MASTER|SRI_DISCONNECTED;
+    ri->flags &= SRI_MASTER|SRI_DISCONNECTED; /// 只保留这两个标志位,但ri的身份仍是master
     if (ri->leader) {
         sdsfree(ri->leader);
         ri->leader = NULL;
@@ -1325,12 +1331,14 @@ int sentinelResetMastersByPattern(char *pattern, int flags) {
     int reset = 0;
 
     di = dictGetIterator(sentinel.masters);
+    /// 遍历sentinel.masters
     while((de = dictNext(di)) != NULL) {
         sentinelRedisInstance *ri = dictGetVal(de);
 
         if (ri->name) {
             /// 匹配名字
             if (stringmatch(pattern,ri->name,0)) {
+                /// 将匹配的master回复到默认状态
                 sentinelResetMaster(ri,flags);
                 reset++;
             }
@@ -1347,7 +1355,7 @@ int sentinelResetMastersByPattern(char *pattern, int flags) {
  *
  * The function returns REDIS_ERR if the address can't be resolved for some
  * reason. Otherwise REDIS_OK is returned.  */
-/// 具体还看不太懂,暂且跳过????????
+/// 将'master'的地址替换为ip:port,将'master'之前的slave保存到新的master中(旧的master也将成为新master的slave,如果新master地址与旧master不同的话)
 int sentinelResetMasterAndChangeAddress(sentinelRedisInstance *master, char *ip, int port) {
     sentinelAddr *oldaddr, *newaddr;
     sentinelAddr **slaves = NULL;
@@ -1362,9 +1370,11 @@ int sentinelResetMasterAndChangeAddress(sentinelRedisInstance *master, char *ip,
     /* Make a list of slaves to add back after the reset.
      * Don't include the one having the address we are switching to. */
     di = dictGetIterator(master->slaves);
+    /// 遍历master->slaves,将其ip:port保存,以便在reset master后恢复
     while((de = dictNext(di)) != NULL) {
         sentinelRedisInstance *slave = dictGetVal(de);
 
+        /// 如果slave的addr跟ip:port(也就是新的master地址相同),跳过
         if (sentinelAddrIsEqual(slave->addr,newaddr)) continue;
         slaves = zrealloc(slaves,sizeof(sentinelAddr*)*(numslaves+1));
         slaves[numslaves++] = createSentinelAddr(slave->addr->ip,
@@ -1375,6 +1385,7 @@ int sentinelResetMasterAndChangeAddress(sentinelRedisInstance *master, char *ip,
     /* If we are switching to a different address, include the old address
      * as a slave as well, so that we'll be able to sense / reconfigure
      * the old master. */
+    /// 我们选择的新的master(ip:port)不是旧的master,那么旧的master也要作为这个新的master的slave,将旧的master的ip:port保存
     if (!sentinelAddrIsEqual(newaddr,master->addr)) {
         slaves = zrealloc(slaves,sizeof(sentinelAddr*)*(numslaves+1));
         slaves[numslaves++] = createSentinelAddr(master->addr->ip,
@@ -1392,6 +1403,7 @@ int sentinelResetMasterAndChangeAddress(sentinelRedisInstance *master, char *ip,
     for (j = 0; j < numslaves; j++) {
         sentinelRedisInstance *slave;
 
+        /// 将slave添加到新的master.slaves中
         slave = createSentinelRedisInstance(NULL,SRI_SLAVE,slaves[j]->ip,
                     slaves[j]->port, master->quorum, master);
         releaseSentinelAddr(slaves[j]);
@@ -1425,13 +1437,14 @@ int sentinelRedisInstanceNoDownFor(sentinelRedisInstance *ri, mstime_t ms) {
 
 /* Return the current master address, that is, its address or the address
  * of the promoted slave if already operational. */
-/// 返回master当前master节点的ip:port
+/// 返回'master'当前master节点的ip:port(或为自己/或为提升了的slave(faileover)的地址)
 sentinelAddr *sentinelGetCurrentMasterAddress(sentinelRedisInstance *master) {
     /* If we are failing over the master, and the state is already
      * SENTINEL_FAILOVER_STATE_RECONF_SLAVES or greater, it means that we
      * already have the new configuration epoch in the master, and the
      * slave acknowledged the configuration switch. Advertise the new
      * address. */
+    /// 确保新的master已经在正常工作了才选择返回promoted_slave
     if ((master->flags & SRI_FAILOVER_IN_PROGRESS) &&
         master->promoted_slave &&
         master->failover_state >= SENTINEL_FAILOVER_STATE_RECONF_SLAVES)
