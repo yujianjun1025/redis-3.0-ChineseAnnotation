@@ -1798,12 +1798,14 @@ void sentinelKillLink(sentinelRedisInstance *ri, redisAsyncContext *c) {
  * Note: we don't free the hiredis context as hiredis will do it for us
  * for async connections. */
 /// 只置状态,不断开c的连接
+/// 貌似hiredis的异步连接,只需要置为NULL,不需要自己断开,这一部分还不太熟????????
 void sentinelDisconnectInstanceFromContext(const redisAsyncContext *c) {
     sentinelRedisInstance *ri = c->data;
     int pubsub;
 
     if (ri == NULL) return; /* The instance no longer exists. */
 
+    /// 区分传进来的是pubsub/command连接
     pubsub = (ri->pc == c);
     /// 记录一条日志,区分是pubsub-link/cmd-link disconnect
     sentinelEvent(REDIS_DEBUG, pubsub ? "-pubsub-link" : "-cmd-link", ri,
@@ -1812,6 +1814,7 @@ void sentinelDisconnectInstanceFromContext(const redisAsyncContext *c) {
         ri->pc = NULL;
     else
         ri->cc = NULL;
+
     ri->flags |= SRI_DISCONNECTED;
 }
 
@@ -1867,6 +1870,7 @@ void sentinelSendAuthIfNeeded(sentinelRedisInstance *ri, redisAsyncContext *c) {
 void sentinelSetClientName(sentinelRedisInstance *ri, redisAsyncContext *c, char *type) {
     char name[64];
 
+    /// client命名为:'sentinel-[8位runid]-type'
     snprintf(name,sizeof(name),"sentinel-%.8s-%s",server.runid,type);
     if (redisAsyncCommand(c, sentinelDiscardReplyCallback, NULL,
         "CLIENT SETNAME %s", name) == REDIS_OK)
@@ -1878,7 +1882,7 @@ void sentinelSetClientName(sentinelRedisInstance *ri, redisAsyncContext *c, char
 /* Create the async connections for the specified instance if the instance
  * is disconnected. Note that the SRI_DISCONNECTED flag is set even if just
  * one of the two links (commands and pub/sub) is missing. */
-/// 重连ri 
+/// 如果ri的pubsub/command连接断开,那么将其重连,否则立即返回
 void sentinelReconnectInstance(sentinelRedisInstance *ri) {
     /// 不需要重连
     if (!(ri->flags & SRI_DISCONNECTED)) return;
@@ -1894,8 +1898,9 @@ void sentinelReconnectInstance(sentinelRedisInstance *ri) {
             /// 断开连接
             sentinelKillLink(ri,ri->cc);
         } else {
+            /// 记录连接时间
             ri->cc_conn_time = mstime();
-            ri->cc->data = ri;
+            ri->cc->data = ri; /// 异步连接context保存这个ri
             /// 将r->cc注册到server.el上
             redisAeAttach(server.el,ri->cc);
             /// 连接完成回调函数
@@ -1914,6 +1919,7 @@ void sentinelReconnectInstance(sentinelRedisInstance *ri) {
         }
     }
     /* Pub / Sub */
+    /// sentinel与sentinel之间不需要pubsub连接吗???????
     if ((ri->flags & (SRI_MASTER|SRI_SLAVE)) && ri->pc == NULL) {
         ri->pc = redisAsyncConnectBind(ri->addr->ip,ri->addr->port,REDIS_BIND_ADDR);
         if (ri->pc->err) {
@@ -1925,6 +1931,7 @@ void sentinelReconnectInstance(sentinelRedisInstance *ri) {
 
             ri->pc_conn_time = mstime();
             ri->pc->data = ri;
+            /// 将连接注册到eventloop上
             redisAeAttach(server.el,ri->pc);
             redisAsyncSetConnectCallback(ri->pc,
                                             sentinelLinkEstablishedCallback);
@@ -1974,6 +1981,7 @@ int sentinelMasterLooksSane(sentinelRedisInstance *master) {
 }
 
 /* Process the INFO output from masters. */
+/// 这个函数的后半部分整体都看不太懂........????????
 void sentinelRefreshInstanceInfo(sentinelRedisInstance *ri, const char *info) {
     sds *lines;
     int numlines, j;
@@ -2000,6 +2008,7 @@ void sentinelRefreshInstanceInfo(sentinelRedisInstance *ri, const char *info) {
             } else { /// runid不匹配
                 if (strncmp(ri->runid,l+7,40) != 0) {
                     /// reboot事件????????
+                    /// runid不匹配肯定是因为重启过对吧????????
                     sentinelEvent(REDIS_NOTICE,"+reboot",ri,"%@");
                     sdsfree(ri->runid);
                     /// 赋值为新的runid
@@ -2080,6 +2089,7 @@ void sentinelRefreshInstanceInfo(sentinelRedisInstance *ri, const char *info) {
                     /// 设置为读取到的master host
                     sdsfree(ri->slave_master_host);
                     ri->slave_master_host = sdsnew(l+12);
+                    /// slave的master变了,记录变化(slave conf)的时间
                     ri->slave_conf_change_time = mstime();
                 }
             }
@@ -2141,7 +2151,7 @@ void sentinelRefreshInstanceInfo(sentinelRedisInstance *ri, const char *info) {
     if (sentinel.tilt) return;
 
     /* Handle master -> slave role switch. */
-    /// master降为slave
+    /// master降为slave,暂时没任何处理
     if ((ri->flags & SRI_MASTER) && role == SRI_SLAVE) {
         /* Nothing to do, but masters claiming to be slaves are
          * considered to be unreachable by Sentinel, so eventually
@@ -2288,11 +2298,13 @@ void sentinelPingReplyCallback(redisAsyncContext *c, void *reply, void *privdata
         r->type == REDIS_REPLY_ERROR) {
         /* Update the "instance available" field only if this is an
          * acceptable reply. */
+        /// PING所有正常可能的回包
         if (strncmp(r->str,"PONG",4) == 0 ||
             strncmp(r->str,"LOADING",7) == 0 ||
             strncmp(r->str,"MASTERDOWN",10) == 0)
         {
             ri->last_avail_time = mstime();
+            /// last_ping_time = 0表明PING成功发出且收到了PONG
             ri->last_ping_time = 0; /* Flag the pong as received. */
         } else {
             /* Send a SCRIPT KILL command if the instance appears to be
@@ -2311,6 +2323,7 @@ void sentinelPingReplyCallback(redisAsyncContext *c, void *reply, void *privdata
             }
         }
     }
+    /// 更新接收到PONG的时间
     ri->last_pong_time = mstime();
 }
 
@@ -2339,7 +2352,6 @@ void sentinelPublishReplyCallback(redisAsyncContext *c, void *reply, void *privd
  * If the master name specified in the message is not known, the message is
  * discarded. */
 /// 处理hello消息
-/// 有一些结构体里的变量,作用以及相互关系仍未明确????????
 void sentinelProcessHelloMessage(char *hello, int hello_len) {
     /* Format is composed of 8 tokens:
      * 0=ip,1=port,2=runid,3=current_epoch,4=master_name,
@@ -2372,6 +2384,7 @@ void sentinelProcessHelloMessage(char *hello, int hello_len) {
              * OR the same ip/port, because it's either a restart or a
              * network topology change. */
             /// 删除ip(token[0]):port/runid(token[2])匹配的
+            /// 都找不到了,怎么有可能有删除的呢,这里可能是防御性编程????????
             removed = removeMatchingSentinelsFromMaster(master,token[0],port,
                             token[2]);
             if (removed) {
@@ -2397,6 +2410,7 @@ void sentinelProcessHelloMessage(char *hello, int hello_len) {
         /* Update local current_epoch if received current_epoch is greater.*/
         /// 有新的epoch
         if (current_epoch > sentinel.current_epoch) {
+            /// sentinel.current_epoch总是最大的
             sentinel.current_epoch = current_epoch;
             sentinelFlushConfig();
             sentinelEvent(REDIS_WARNING,"+new-epoch",master,"%llu",
@@ -2404,9 +2418,10 @@ void sentinelProcessHelloMessage(char *hello, int hello_len) {
         }
 
         /* Update master info if received configuration is newer. */
+        /// master有了新的配置
         if (master->config_epoch < master_config_epoch) {
             master->config_epoch = master_config_epoch;
-            /// 选择新的master
+            /// master的端口或者ip发生了变化
             if (master_port != master->addr->port ||
                 strcmp(master->addr->ip, token[5]))
             {
