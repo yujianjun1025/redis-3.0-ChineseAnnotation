@@ -1488,7 +1488,7 @@ char *sentinelHandleConfiguration(char **argv, int argc) {
         int quorum = atoi(argv[4]);
 
         if (quorum <= 0) return "Quorum must be 1 or greater.";
-        /// 创建一个SentinelRedisInstance, 每读到一个monitor就认为他是SRI_MASTER????????
+        /// 创建一个master SentinelRedisInstance
         if (createSentinelRedisInstance(argv[1],SRI_MASTER,argv[2],
                                         atoi(argv[3]),quorum,NULL) == NULL)
         {
@@ -1500,11 +1500,16 @@ char *sentinelHandleConfiguration(char **argv, int argc) {
         }
     } else if (!strcasecmp(argv[0],"down-after-milliseconds") && argc == 3) {
         /* down-after-milliseconds <name> <milliseconds> */
+        /// 取出名为<name>的master节点
         ri = sentinelGetMasterByName(argv[1]);
-        if (!ri) return "No such master with specified name.";
+        if (!ri) 
+            return "No such master with specified name.";
+
         ri->down_after_period = atoi(argv[2]);
         if (ri->down_after_period <= 0)
             return "negative or zero time parameter.";
+
+        /// 将master下所有的slave和sentinel的down-after-milliseconds全部设置为这个时间
         sentinelPropagateDownAfterPeriod(ri);
     } else if (!strcasecmp(argv[0],"failover-timeout") && argc == 3) {
         /* failover-timeout <name> <milliseconds> */
@@ -1522,6 +1527,7 @@ char *sentinelHandleConfiguration(char **argv, int argc) {
         /* notification-script <name> <path> */
         ri = sentinelGetMasterByName(argv[1]);
         if (!ri) return "No such master with specified name.";
+        /// 脚本必须是可执行的
         if (access(argv[2],X_OK) == -1)
             return "Notification script seems non existing or non executable.";
         ri->notification_script = sdsnew(argv[2]);
@@ -1542,7 +1548,7 @@ char *sentinelHandleConfiguration(char **argv, int argc) {
         /* current-epoch <epoch> */
         unsigned long long current_epoch = strtoull(argv[1],NULL,10);
         if (current_epoch > sentinel.current_epoch)
-            sentinel.current_epoch = current_epoch;
+            sentinel.current_epoch = current_epoch; /// sentinel.current_epoch设置为较大的那一个
     } else if (!strcasecmp(argv[0],"config-epoch") && argc == 3) {
         /* config-epoch <name> <epoch> */
         ri = sentinelGetMasterByName(argv[1]);
@@ -1600,7 +1606,7 @@ char *sentinelHandleConfiguration(char **argv, int argc) {
  * (the configured masters) but also in order to retain the state of
  * Sentinel across restarts: config epoch of masters, associated slaves
  * and sentinel instances, and so forth. */
-/// 重写sentinel.conf文件,还未细看????????
+/// 重写sentinel.conf文件,将当前sentinel.master每个master所有已知的slave,sentinel,以及各种已知的配置重写到sentinel.conf配置文件中
 void rewriteConfigSentinelOption(struct rewriteConfigState *state) {
     dictIterator *di, *di2;
     dictEntry *de;
@@ -1608,6 +1614,7 @@ void rewriteConfigSentinelOption(struct rewriteConfigState *state) {
 
     /* For every master emit a "sentinel monitor" config entry. */
     di = dictGetIterator(sentinel.masters);
+    /// 遍历所有的master
     while((de = dictNext(di)) != NULL) {
         sentinelRedisInstance *master, *ri;
         sentinelAddr *master_addr;
@@ -1681,6 +1688,7 @@ void rewriteConfigSentinelOption(struct rewriteConfigState *state) {
         rewriteConfigRewriteLine(state,"sentinel",line,1);
 
         /* sentinel known-slave */
+        /// 将master已知的slave写入配置文件
         di2 = dictGetIterator(master->slaves);
         while((de = dictNext(di2)) != NULL) {
             sentinelAddr *slave_addr;
@@ -1703,6 +1711,7 @@ void rewriteConfigSentinelOption(struct rewriteConfigState *state) {
         dictReleaseIterator(di2);
 
         /* sentinel known-sentinel */
+        /// 将其他一直的sentinel写入配置文件
         di2 = dictGetIterator(master->sentinels);
         while((de = dictNext(di2)) != NULL) {
             ri = dictGetVal(de);
