@@ -1755,6 +1755,7 @@ void rewriteConfigSentinelOption(struct rewriteConfigState *state) {
  *
  * On failure the function logs a warning on the Redis log. */
 /// sentinel重写配置并刷新到磁盘
+/// 就是将当前sentinel的信息写到配置文件中,下次启动直接读配置文件,算是一种'配置持久化'
 void sentinelFlushConfig(void) {
     int fd = -1;
     int saved_hz = server.hz;
@@ -2168,7 +2169,7 @@ void sentinelRefreshInstanceInfo(sentinelRedisInstance *ri, const char *info) {
             (ri->master->flags & SRI_FAILOVER_IN_PROGRESS) &&
             (ri->master->failover_state ==
                 SENTINEL_FAILOVER_STATE_WAIT_PROMOTION))
-        {
+        {  /// SENTINEL_FAILOVER_STATE_WAIT_PROMOTION -> SENTINEL_FAILOVER_STATE_RECONF_SLAVES
             /* Now that we are sure the slave was reconfigured as a master
              * set the master configuration epoch to the epoch we won the
              * election to perform this failover. This will force the other
@@ -2551,7 +2552,10 @@ void sentinelForceHelloUpdateDictOfRedisInstances(dict *instances) {
     di = dictGetSafeIterator(instances);
     while((de = dictNext(di)) != NULL) {
         sentinelRedisInstance *ri = dictGetVal(de);
-        /// 不知道有啥用,但好像是强制在下一个周期更新hello????????
+        /// 强制在下一个周期发送hello
+        /// 因为判断是否要publish hello是这样判断的
+        /// if (mstime() - ri->last_pub_time >= SENTINEL_PUBLISH_PERIOD)
+        ///     publish_hello;
         /// 这个分支肯定会进入的mstime() 总是 > 2000 + 1
         if (ri->last_pub_time >= (SENTINEL_PUBLISH_PERIOD+1))
             ri->last_pub_time -= (SENTINEL_PUBLISH_PERIOD+1);
@@ -2595,7 +2599,7 @@ int sentinelSendPing(sentinelRedisInstance *ri) {
         /// ri->last_ping_time != 0 表示发送出了ping,还未收到pong
         if (ri->last_ping_time == 0) 
         {
-            ri->last_ping_time = mstime();
+            ri->last_ping_time = mstime(); /// 只有收到了pong,才更新last_ping_time
         }
         return 1;
     } else {
@@ -2606,6 +2610,7 @@ int sentinelSendPing(sentinelRedisInstance *ri) {
 /* Send periodic PING, INFO, and PUBLISH to the Hello channel to
  * the specified master or slave instance. */
 /// 周期性的发送命令/发送周期性的命令(通过这些命令来获取其他sentinel的状态/通知其他sentinel自己的状态)
+/// 关键函数!!!!
 void sentinelSendPeriodicCommands(sentinelRedisInstance *ri) {
     mstime_t now = mstime();
     mstime_t info_period, ping_period;
@@ -2613,7 +2618,7 @@ void sentinelSendPeriodicCommands(sentinelRedisInstance *ri) {
 
     /* Return ASAP if we have already a PING or INFO already pending, or
      * in the case the instance is not properly connected. */
-    /// 已经断开
+    /// 已经断开,立即返回
     if (ri->flags & SRI_DISCONNECTED) return;
 
     /* For INFO, PING, PUBLISH that are not critical commands to send we
@@ -2903,7 +2908,7 @@ sentinelRedisInstance *sentinelGetMasterByNameOrReplyError(redisClient *c,
     return ri;
 }
 
-/// 命令sentinel,貌似这个命令的操作对象都是master
+/// sentinel命令
 void sentinelCommand(redisClient *c) {
     if (!strcasecmp(c->argv[1]->ptr,"masters")) {
         /* SENTINEL MASTERS */
@@ -3059,7 +3064,6 @@ void sentinelCommand(redisClient *c) {
         }
 
         /* Parameters are valid. Try to create the master instance. */
-        /// 为什么这里创建的是master节点????????
         ri = createSentinelRedisInstance(c->argv[2]->ptr,SRI_MASTER,
                 c->argv[3]->ptr,port,quorum,NULL);
         /// 创建失败
@@ -3618,7 +3622,6 @@ char *sentinelGetLeader(sentinelRedisInstance *master, uint64_t epoch) {
         /// ri->leader_epoch == sentinel.current_epoch ????????
         if (ri->leader != NULL && ri->leader_epoch == sentinel.current_epoch)
         {
-            /// 这一步进行完了,counters里的->voters == 1吧????????
             sentinelLeaderIncr(counters,ri->leader);
         }
     }
@@ -3724,7 +3727,7 @@ int sentinelSendSlaveOf(sentinelRedisInstance *ri, char *host, int port) {
      * an issue because CLIENT is variadic command, so Redis will not
      * recognized as a syntax error, and the transaction will not fail (but
      * only the unsupported command will fail). */
-    /// 这里为什么要kill normal clients????????
+    /// 断开所有的TYPE normal CLIENT,因为slave -> master
     retval = redisAsyncCommand(ri->cc,
         sentinelDiscardReplyCallback, NULL, "CLIENT KILL TYPE normal");
     if (retval == REDIS_ERR) return retval;
@@ -4230,6 +4233,7 @@ void sentinelHandleRedisInstance(sentinelRedisInstance *ri) {
     /* Every kind of instance */
     /// 重连需要重连的ri
     sentinelReconnectInstance(ri);
+    /// 发送周期性命令,INFO/PING/PUBLISH
     sentinelSendPeriodicCommands(ri);
 
     /* ============== ACTING HALF ============= */
@@ -4268,6 +4272,7 @@ void sentinelHandleRedisInstance(sentinelRedisInstance *ri) {
 
 /* Perform scheduled operations for all the instances in the dictionary.
  * Recursively call the function against dictionaries of slaves. */
+/// sentinel的操作入口就是这个函数,由timer调用
 void sentinelHandleDictOfRedisInstances(dict *instances) {
     dictIterator *di;
     dictEntry *de;
@@ -4278,6 +4283,7 @@ void sentinelHandleDictOfRedisInstances(dict *instances) {
     while((de = dictNext(di)) != NULL) {
         sentinelRedisInstance *ri = dictGetVal(de);
 
+        /// 对单个ri进行操作
         sentinelHandleRedisInstance(ri);
         if (ri->flags & SRI_MASTER) {
             /// 进行递归操作,递归所有的slave
