@@ -1982,7 +1982,7 @@ int sentinelMasterLooksSane(sentinelRedisInstance *master) {
 }
 
 /* Process the INFO output from masters. */
-/// 这个函数的后半部分整体都看不太懂........????????
+/// 根据读到的INFO信息,刷新ri里的各种状态和配置
 void sentinelRefreshInstanceInfo(sentinelRedisInstance *ri, const char *info) {
     sds *lines;
     int numlines, j;
@@ -2008,8 +2008,7 @@ void sentinelRefreshInstanceInfo(sentinelRedisInstance *ri, const char *info) {
                 ri->runid = sdsnewlen(l+7,40);
             } else { /// runid不匹配
                 if (strncmp(ri->runid,l+7,40) != 0) {
-                    /// reboot事件????????
-                    /// runid不匹配肯定是因为重启过对吧????????
+                    /// runid不匹配,因为监视的redis-server重启了
                     sentinelEvent(REDIS_NOTICE,"+reboot",ri,"%@");
                     sdsfree(ri->runid);
                     /// 赋值为新的runid
@@ -2049,7 +2048,8 @@ void sentinelRefreshInstanceInfo(sentinelRedisInstance *ri, const char *info) {
 
             /* Check if we already have this slave into our table,
              * otherwise add it. */
-            /// 之前没有这个节点
+            /// 通过向检测的redis-server(master)发送INFO命令,通过INFO命令探测是否有新的slave
+            /// 之前没有这个slave
             if (sentinelRedisInstanceLookupSlave(ri,ip,atoi(port)) == NULL) {
                 /// 创建这个SRI_SLAVE节点
                 if ((slave = createSentinelRedisInstance(NULL,SRI_SLAVE,ip,
@@ -2090,7 +2090,7 @@ void sentinelRefreshInstanceInfo(sentinelRedisInstance *ri, const char *info) {
                     /// 设置为读取到的master host
                     sdsfree(ri->slave_master_host);
                     ri->slave_master_host = sdsnew(l+12);
-                    /// slave的master变了,记录变化(slave conf)的时间
+                    /// slave的master变了,记录变化(slave_conf_change_time)的时间
                     ri->slave_conf_change_time = mstime();
                 }
             }
@@ -2135,6 +2135,7 @@ void sentinelRefreshInstanceInfo(sentinelRedisInstance *ri, const char *info) {
     /// 当角色变化的时候,记录某些状态和日志
     if (role != ri->role_reported) {
         ri->role_reported_time = mstime();
+        /// 保存当前的role
         ri->role_reported = role;
         if (role == SRI_SLAVE) ri->slave_conf_change_time = mstime();
         /* Log the event with +role-change if the new role is coherent or
@@ -2161,7 +2162,6 @@ void sentinelRefreshInstanceInfo(sentinelRedisInstance *ri, const char *info) {
 
     /* Handle slave -> master role switch. */
     /// slave提升为master
-    /// 暂时还看不太懂,先跳过????????
     if ((ri->flags & SRI_SLAVE) && role == SRI_MASTER) {
         /* If this is a promoted slave we can change state to the
          * failover state machine. */
@@ -2175,7 +2175,9 @@ void sentinelRefreshInstanceInfo(sentinelRedisInstance *ri, const char *info) {
              * election to perform this failover. This will force the other
              * Sentinels to update their config (assuming there is not
              * a newer one already available). */
+            /// slave的master的配置纪元设为failover的配置纪元
             ri->master->config_epoch = ri->master->failover_epoch;
+            /// 将faileover状态机置为下一步状态,即(SENTINEL_FAILOVER_STATE_WAIT_PROMOTION -> SENTINEL_FAILOVER_STATE_RECONF_SLAVES)
             ri->master->failover_state = SENTINEL_FAILOVER_STATE_RECONF_SLAVES;
             ri->master->failover_state_change_time = mstime();
             sentinelFlushConfig();
@@ -2191,6 +2193,8 @@ void sentinelRefreshInstanceInfo(sentinelRedisInstance *ri, const char *info) {
              * going forward, to receive new configs if any. */
             mstime_t wait_time = SENTINEL_PUBLISH_PERIOD*4;
 
+            /// 这个slave不是一个failover,但由于某个误操作,将这个slave提升成为了master,我们要将她重新转为slave
+            /// 例行检查下master是否有问题
             if (!(ri->flags & SRI_PROMOTED) &&
                  sentinelMasterLooksSane(ri->master) &&
                  sentinelRedisInstanceNoDownFor(ri,wait_time) &&
@@ -2221,6 +2225,7 @@ void sentinelRefreshInstanceInfo(sentinelRedisInstance *ri, const char *info) {
             sentinelRedisInstanceNoDownFor(ri,wait_time) &&
             mstime() - ri->slave_conf_change_time > wait_time)
         {
+            /// 确保新的master没问题之后,将自己作为他的slave
             int retval = sentinelSendSlaveOf(ri,
                     ri->master->addr->ip,
                     ri->master->addr->port);
@@ -2231,26 +2236,29 @@ void sentinelRefreshInstanceInfo(sentinelRedisInstance *ri, const char *info) {
 
     /* Detect if the slave that is in the process of being reconfigured
      * changed state. */
-    /// 这个也暂时看不太懂????????
+    /// 这个slave正在重新同步新的master(新的master为promoted slave),slave已经发送出去slave of new_master_ip:port
     if ((ri->flags & SRI_SLAVE) && role == SRI_SLAVE &&
         (ri->flags & (SRI_RECONF_SENT|SRI_RECONF_INPROG)))
     {
         /* SRI_RECONF_SENT -> SRI_RECONF_INPROG. */
+        /// slave已经发送出slave of promoted_slave_ip:port,但与master连接还没起来
         if ((ri->flags & SRI_RECONF_SENT) &&
             ri->slave_master_host &&
             strcmp(ri->slave_master_host,
                     ri->master->promoted_slave->addr->ip) == 0 &&
             ri->slave_master_port == ri->master->promoted_slave->addr->port)
         {
+            /// 将SRI_RECONF状态置为下一步(这里是一个状态机) SRI_RECONF_SENT -> SRI_RECONF_INPROG
             ri->flags &= ~SRI_RECONF_SENT;
             ri->flags |= SRI_RECONF_INPROG;
             sentinelEvent(REDIS_NOTICE,"+slave-reconf-inprog",ri,"%@");
         }
 
         /* SRI_RECONF_INPROG -> SRI_RECONF_DONE */
+        /// slave与promoted_slave_ip:port的连接已经起来了,下一步就是让他自己重新同步了 
         if ((ri->flags & SRI_RECONF_INPROG) &&
             ri->slave_master_link_status == SENTINEL_MASTER_LINK_STATUS_UP)
-        {
+        {   /// SRI_RECONF_INPROG -> SRI_RECONF_DONE
             ri->flags &= ~SRI_RECONF_INPROG;
             ri->flags |= SRI_RECONF_DONE;
             sentinelEvent(REDIS_NOTICE,"+slave-reconf-done",ri,"%@");
@@ -2656,6 +2664,7 @@ void sentinelSendPeriodicCommands(sentinelRedisInstance *ri) {
         (now - ri->info_refresh) > info_period))
     {
         /* Send INFO to masters and slaves, not sentinels. */
+        /// ri->info_refresh时间在sentinelInfoReplyCallback这里面刷新
         retval = redisAsyncCommand(ri->cc,
             sentinelInfoReplyCallback, NULL, "INFO");
         if (retval == REDIS_OK) ri->pending_commands++;
@@ -4126,6 +4135,7 @@ void sentinelFailoverReconfNextSlave(sentinelRedisInstance *master) {
         int retval;
 
         /* Skip the promoted slave, and already configured slaves. */
+        /// 跳过已经提升为master的slave,还有已经重新配置(同步新的master)完成了的slave
         if (slave->flags & (SRI_PROMOTED|SRI_RECONF_DONE)) continue;
 
         /* If too much time elapsed without the slave moving forward to
