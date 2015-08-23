@@ -2384,6 +2384,7 @@ void sentinelProcessHelloMessage(char *hello, int hello_len) {
         /// 从master->sentinel中寻找ip(token[0]):port/runid(token[2])匹配的
         si = getSentinelRedisInstanceByAddrAndRunID(
                         master->sentinels,token[0],port,token[2]);
+                        ///               ip,      port,runid
         current_epoch = strtoull(token[3],NULL,10);
         master_config_epoch = strtoull(token[7],NULL,10);
 
@@ -2403,7 +2404,7 @@ void sentinelProcessHelloMessage(char *hello, int hello_len) {
             }
 
             /* Add the new sentinel. */
-            /// 添加新的sentinel
+            /// 添加新的sentinel(这个sentinel和master监控的是同一个master)
             si = createSentinelRedisInstance(NULL,SRI_SENTINEL,
                             token[0],port,master->quorum,master);
             if (si) {
@@ -2514,6 +2515,7 @@ int sentinelSendHello(sentinelRedisInstance *ri) {
     int retval;
     char *announce_ip;
     int announce_port;
+    /// 拿到master信息
     sentinelRedisInstance *master = (ri->flags & SRI_MASTER) ? ri : ri->master;
     sentinelAddr *master_addr = sentinelGetCurrentMasterAddress(master);
 
@@ -2538,7 +2540,7 @@ int sentinelSendHello(sentinelRedisInstance *ri) {
         "%s,%s,%d,%llu", /* Info about current master. */
         announce_ip, announce_port, server.runid,
         (unsigned long long) sentinel.current_epoch,
-        /* --- */
+        /* - master - */
         master->name,master_addr->ip,master_addr->port,
         (unsigned long long) master->config_epoch);
     /// PUBLISH这条hello消息
@@ -3425,6 +3427,7 @@ void sentinelCheckObjectivelyDown(sentinelRedisInstance *master) {
         if ((master->flags & SRI_O_DOWN) == 0) {
             sentinelEvent(REDIS_WARNING,"+odown",master,"%@ #quorum %d/%d",
                 quorum, master->quorum);
+            /// 这台master被足够的法定人数确认为下线
             master->flags |= SRI_O_DOWN;
             master->o_down_since_time = mstime();
         }
@@ -3440,6 +3443,7 @@ void sentinelCheckObjectivelyDown(sentinelRedisInstance *master) {
 /* Receive the SENTINEL is-master-down-by-addr reply, see the
  * sentinelAskMasterStateToOtherSentinels() function for more information. */
 /// 接收到master is down的回调函数,reply格式:[1/0(标识是否down)],[new leader name],[new leader epoch]
+/// 处理这个命令看函数sentinelCommand()
 void sentinelReceiveIsMasterDownReply(redisAsyncContext *c, void *reply, void *privdata) {
     sentinelRedisInstance *ri = c->data;
     redisReply *r;
@@ -3515,8 +3519,9 @@ void sentinelAskMasterStateToOtherSentinels(sentinelRedisInstance *master, int f
          * 1) We believe it is down, or there is a failover in progress.
          * 2) Sentinel is connected.
          * 3) We did not received the info within SENTINEL_ASK_PERIOD ms. */
-        /// 下面的这三个条件不太懂????????
+        /// 如果master不是SRI_S_DOWN状态,不向其他sentinel询问他们眼中这个master的状态
         if ((master->flags & SRI_S_DOWN) == 0) continue;
+        /// ri没有连接,不询问
         if (ri->flags & SRI_DISCONNECTED) continue;
         if (!(flags & SENTINEL_ASK_FORCED) &&
             mstime() - ri->last_master_down_reply_time < SENTINEL_ASK_PERIOD)
@@ -3532,7 +3537,10 @@ void sentinelAskMasterStateToOtherSentinels(sentinelRedisInstance *master, int f
                     master->addr->ip, port,
                     sentinel.current_epoch,
                     (master->failover_state > SENTINEL_FAILOVER_STATE_NONE) ?
-                    server.runid : "*");
+                    server.runid : "*"); /// failover没有启动的时候,发送的命令是
+                    /// SENTINEL is-master-down-by-addr ip port current_epoch *
+                    /// faileover启动的时候,发送的命令是
+                    /// SENTINEL is-master-down-by-addr ip port current_epoch server.runid
         if (retval == REDIS_OK) ri->pending_commands++;
     }
     dictReleaseIterator(di);
@@ -3759,7 +3767,7 @@ void sentinelStartFailover(sentinelRedisInstance *master) {
 
     /// failover状态为等待启动
     master->failover_state = SENTINEL_FAILOVER_STATE_WAIT_START;
-    /// 置位,表示failover已经启动
+    /// 置位,表示failover已经启动,进入failover状态机
     master->flags |= SRI_FAILOVER_IN_PROGRESS;
     master->failover_epoch = ++sentinel.current_epoch;
     sentinelEvent(REDIS_WARNING,"+new-epoch",master,"%llu",
@@ -3795,7 +3803,7 @@ int sentinelStartFailoverIfNeeded(sentinelRedisInstance *master) {
     if (mstime() - master->failover_start_time <
         master->failover_timeout*2)
     {
-        /// 记录时间
+        /// 记录failover启动的时间
         if (master->failover_delay_logged != master->failover_start_time) {
             time_t clock = (master->failover_start_time +
                             master->failover_timeout*2) / 1000;
@@ -3811,7 +3819,7 @@ int sentinelStartFailoverIfNeeded(sentinelRedisInstance *master) {
         return 0;
     }
 
-    /// 设置状态
+    /// 设置failover初始状态
     sentinelStartFailover(master);
     return 1;
 }
@@ -3969,6 +3977,8 @@ void sentinelFailoverWaitStart(sentinelRedisInstance *ri) {
         }
         return;
     }
+
+    /// 只有被选为leader的sentinel才能执行failover操作
     sentinelEvent(REDIS_WARNING,"+elected-leader",ri,"%@");
     /// 将状态置为等待选择合适的slave
     ri->failover_state = SENTINEL_FAILOVER_STATE_SELECT_SLAVE;
