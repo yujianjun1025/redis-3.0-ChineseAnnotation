@@ -2982,9 +2982,9 @@ void sentinelCommand(redisClient *c) {
         /* Vote for the master (or fetch the previous vote) if the request
          * includes a runid, otherwise the sender is not seeking for a vote. */
         /// vote:投票,选举leader
-        /// 第五个参数,runid不能是'*'
+        /// 第五个参数,runid如果不是'*',就说明发起询问is-master-down-by-addr的sentinel希望他所询问的sentinel选举自己为领导,进行fail_over操作
         if (ri && ri->flags & SRI_MASTER && strcasecmp(c->argv[5]->ptr,"*")) {
-            /// 选举leader????????
+            /// 选举leader
             leader = sentinelVoteLeader(ri,(uint64_t)req_epoch,
                                             c->argv[5]->ptr,
                                             &leader_epoch);
@@ -3536,7 +3536,8 @@ void sentinelAskMasterStateToOtherSentinels(sentinelRedisInstance *master, int f
                     "SENTINEL is-master-down-by-addr %s %s %llu %s",
                     master->addr->ip, port,
                     sentinel.current_epoch,
-                    (master->failover_state > SENTINEL_FAILOVER_STATE_NONE) ?
+                    (master->failover_state > SENTINEL_FAILOVER_STATE_NONE) ? /// 如果这个master是启动了failover的master,那么询问
+                    /// SENTINEL is-master-down-by-addr 会带上自己的runid,以要求其他的sentinel选举自己为leader
                     server.runid : "*"); /// failover没有启动的时候,发送的命令是
                     /// SENTINEL is-master-down-by-addr ip port current_epoch *
                     /// faileover启动的时候,发送的命令是
@@ -3553,7 +3554,8 @@ void sentinelAskMasterStateToOtherSentinels(sentinelRedisInstance *master, int f
  *
  * If a vote is not available returns NULL, otherwise return the Sentinel
  * runid and populate the leader_epoch with the epoch of the vote. */
-/// 选举master的leader,有些地方不太懂
+/// 将master的leader设置为req_runid的sentinel(如果master->leader_epoch < req_epoch && sentinel.current_epoch <= req_epoch)的话
+/// 返回当前的leader的runid(可能执行完函数返回最新的leader或者返回旧的leader)或者NULL(无leader)
 char *sentinelVoteLeader(sentinelRedisInstance *master, uint64_t req_epoch, char *req_runid, uint64_t *leader_epoch) {
     /// 保存新的epoch数,刷新配置
     if (req_epoch > sentinel.current_epoch) {
@@ -3663,11 +3665,15 @@ char *sentinelGetLeader(sentinelRedisInstance *master, uint64_t epoch) {
     /* Count this Sentinel vote:
      * if this Sentinel did not voted yet, either vote for the most
      * common voted sentinel, or for itself if no vote exists at all. */
-    /// 将winter设为leader
     if (winner)
+    {
+        /// 将winner设为leader或者返回已有的leader
         myvote = sentinelVoteLeader(master,epoch,winner,&leader_epoch);
-    else /// 是将自己设为leader????????
+    }
+    else /// 将自己设为leader或者返回已有的leader
+    {
         myvote = sentinelVoteLeader(master,epoch,server.runid,&leader_epoch);
+    }
 
     if (myvote && leader_epoch == epoch) {
         uint64_t votes = sentinelLeaderIncr(counters,myvote);
@@ -4204,6 +4210,7 @@ void sentinelFailoverStateMachine(sentinelRedisInstance *ri) {
     if (!(ri->flags & SRI_FAILOVER_IN_PROGRESS)) return;
 
     switch(ri->failover_state) {
+        /// 只在这个状态跳到下个状态才判断自己是否leader????????
         case SENTINEL_FAILOVER_STATE_WAIT_START:
             sentinelFailoverWaitStart(ri);
             break;
@@ -4280,7 +4287,7 @@ void sentinelHandleRedisInstance(sentinelRedisInstance *ri) {
     if (ri->flags & SRI_MASTER) {
         /// 判断主观下线
         sentinelCheckObjectivelyDown(ri);
-        /// 启动failover
+        /// 启动failover,failover只有第一个确认了才能启动,且启动后其他sentinel无法再次启动(只能启动一次)
         if (sentinelStartFailoverIfNeeded(ri))
             sentinelAskMasterStateToOtherSentinels(ri,SENTINEL_ASK_FORCED);
 
