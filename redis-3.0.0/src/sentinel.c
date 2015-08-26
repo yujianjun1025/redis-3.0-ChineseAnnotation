@@ -4285,9 +4285,10 @@ void sentinelHandleRedisInstance(sentinelRedisInstance *ri) {
 
     /* Only masters */
     if (ri->flags & SRI_MASTER) {
-        /// 判断主观下线
+        /// 判断客观下线
         sentinelCheckObjectivelyDown(ri);
-        /// 启动failover,failover只有第一个确认了才能启动,且启动后其他sentinel无法再次启动(只能启动一次)
+        /// 启动failover,failover只有第一个确认了才能启动,且启动后当前进程其他sentinel无法再次启动(只能启动一次),
+        /// 其他sentinel进程仍可以启动
         if (sentinelStartFailoverIfNeeded(ri))
             sentinelAskMasterStateToOtherSentinels(ri,SENTINEL_ASK_FORCED);
 
